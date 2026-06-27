@@ -80,7 +80,8 @@
       "Bash(echo \"Instance 2 PID: $!\")",
       "Bash(git -C \"/Users/nihanthpinnaka/Documents/SDMo App\" status)",
       "Bash(gh auth *)",
-      "Bash(ls ~/.ssh/*.pub 2>/dev/null && echo \"SSH keys found\" || echo \"No SSH keys\")"
+      "Bash(ls ~/.ssh/*.pub 2>/dev/null && echo \"SSH keys found\" || echo \"No SSH keys\")",
+      "Bash(node -e \"const p = require\\('/Users/nihanthpinnaka/Documents/SDMo App/package.json'\\); console.log\\(JSON.stringify\\(p.build?.mac || p.build, null, 2\\)\\)\")"
     ]
   }
 }
