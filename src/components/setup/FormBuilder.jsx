@@ -8,6 +8,9 @@ const ELEMENT_TYPES = [
   { type: 'multiple_choice', label: 'Multiple Choice' },
   { type: 'multiselect', label: 'Multi-Select' },
   { type: 'likert', label: 'Likert Scale' },
+  { type: 'likert_group', label: 'Likert Group' },
+  { type: 'rating', label: 'Rating (labeled)' },
+  { type: 'checkbox', label: 'Checkbox' },
   { type: 'slider', label: 'Slider' },
   { type: 'text_block', label: 'Text Block' },
 ]
@@ -68,7 +71,6 @@ export default function FormBuilder({ projectId, form, onSave, onCancel }) {
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg)' }}>
-      {/* Top bar */}
       <div style={{
         height: 52, display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         padding: '0 20px', borderBottom: '1px solid var(--border)', flexShrink: 0,
@@ -181,6 +183,8 @@ function SectionEditor({ section, collapsed, onToggle, onChange, onRemove, onDup
 }
 
 function ElementEditor({ el, onChange, onRemove }) {
+  const typeLabel = ELEMENT_TYPES.find(t => t.type === el.type)?.label
+
   if (el.type === 'text_block') {
     return (
       <div style={{ border: '1px solid var(--border)', borderRadius: 6, padding: 12 }}>
@@ -196,40 +200,90 @@ function ElementEditor({ el, onChange, onRemove }) {
   return (
     <div style={{ border: '1px solid var(--border)', borderRadius: 6, padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-        <input
-          value={el.label || ''}
-          onChange={e => onChange({ label: e.target.value })}
-          placeholder="Question text"
-          style={{ flex: 1, fontWeight: 500 }}
-        />
-        <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, cursor: 'pointer', marginBottom: 0, whiteSpace: 'nowrap' }}>
-          <input type="checkbox" checked={!!el.required} onChange={e => onChange({ required: e.target.checked })} />
-          Required
-        </label>
-        <span className="badge badge-muted" style={{ fontSize: 10 }}>{ELEMENT_TYPES.find(t => t.type === el.type)?.label}</span>
+        {el.type !== 'checkbox' && (
+          <input
+            value={el.label || ''}
+            onChange={e => onChange({ label: e.target.value })}
+            placeholder={el.type === 'likert_group' ? 'Group header (optional)' : 'Question text'}
+            style={{ flex: 1, fontWeight: 500 }}
+          />
+        )}
+        {el.type === 'checkbox' && (
+          <input
+            value={el.label || ''}
+            onChange={e => onChange({ label: e.target.value })}
+            placeholder="Checkbox label text"
+            style={{ flex: 1, fontWeight: 500 }}
+          />
+        )}
+        {el.type !== 'checkbox' && el.type !== 'likert_group' && (
+          <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, cursor: 'pointer', marginBottom: 0, whiteSpace: 'nowrap' }}>
+            <input type="checkbox" checked={!!el.required} onChange={e => onChange({ required: e.target.checked })} />
+            Required
+          </label>
+        )}
+        <span className="badge badge-muted" style={{ fontSize: 10 }}>{typeLabel}</span>
         <button className="btn btn-ghost btn-icon btn-sm" onClick={onRemove}><Trash2 size={12} /></button>
       </div>
 
-      {(el.type === 'multiple_choice' || el.type === 'multiselect') && (
+      {(el.type === 'multiple_choice' || el.type === 'multiselect' || el.type === 'rating') && (
         <OptionsEditor options={el.options || []} onChange={opts => onChange({ options: opts })} />
       )}
 
       {el.type === 'likert' && (
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-          <div className="form-field" style={{ flex: 1, minWidth: 100 }}>
-            <label>Scale</label>
-            <select value={el.scale || 5} onChange={e => onChange({ scale: Number(e.target.value) })} style={{ height: 32, fontSize: 13 }}>
-              {[3,4,5,6,7].map(n => <option key={n} value={n}>{n}-point</option>)}
-            </select>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <div className="form-field" style={{ flex: 1, minWidth: 100 }}>
+              <label>Scale</label>
+              <select value={el.scale || 5} onChange={e => onChange({ scale: Number(e.target.value) })} style={{ height: 32, fontSize: 13 }}>
+                {[3,4,5,6,7].map(n => <option key={n} value={n}>{n}-point</option>)}
+              </select>
+            </div>
+            <div className="form-field" style={{ flex: 2, minWidth: 120 }}>
+              <label>Low label</label>
+              <input value={el.low_label || ''} onChange={e => onChange({ low_label: e.target.value })} placeholder="e.g. Strongly Disagree" style={{ height: 32, fontSize: 13 }} />
+            </div>
+            <div className="form-field" style={{ flex: 2, minWidth: 120 }}>
+              <label>High label</label>
+              <input value={el.high_label || ''} onChange={e => onChange({ high_label: e.target.value })} placeholder="e.g. Strongly Agree" style={{ height: 32, fontSize: 13 }} />
+            </div>
           </div>
-          <div className="form-field" style={{ flex: 2, minWidth: 120 }}>
-            <label>Low label</label>
-            <input value={el.low_label || ''} onChange={e => onChange({ low_label: e.target.value })} placeholder="e.g. Strongly Disagree" style={{ height: 32, fontSize: 13 }} />
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', marginBottom: 0 }}>
+            <input type="checkbox" checked={!!el.has_na} onChange={e => onChange({ has_na: e.target.checked })} />
+            Include N/A option
+          </label>
+        </div>
+      )}
+
+      {el.type === 'likert_group' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <input
+            value={el.description || ''}
+            onChange={e => onChange({ description: e.target.value })}
+            placeholder="Group description (optional)"
+            style={{ fontSize: 13 }}
+          />
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <div className="form-field" style={{ flex: 1, minWidth: 100 }}>
+              <label>Scale</label>
+              <select value={el.scale || 5} onChange={e => onChange({ scale: Number(e.target.value) })} style={{ height: 32, fontSize: 13 }}>
+                {[3,4,5,6,7].map(n => <option key={n} value={n}>{n}-point</option>)}
+              </select>
+            </div>
+            <div className="form-field" style={{ flex: 2, minWidth: 120 }}>
+              <label>Low label</label>
+              <input value={el.low_label || ''} onChange={e => onChange({ low_label: e.target.value })} placeholder="e.g. Strongly Disagree" style={{ height: 32, fontSize: 13 }} />
+            </div>
+            <div className="form-field" style={{ flex: 2, minWidth: 120 }}>
+              <label>High label</label>
+              <input value={el.high_label || ''} onChange={e => onChange({ high_label: e.target.value })} placeholder="e.g. Strongly Agree" style={{ height: 32, fontSize: 13 }} />
+            </div>
           </div>
-          <div className="form-field" style={{ flex: 2, minWidth: 120 }}>
-            <label>High label</label>
-            <input value={el.high_label || ''} onChange={e => onChange({ high_label: e.target.value })} placeholder="e.g. Strongly Agree" style={{ height: 32, fontSize: 13 }} />
-          </div>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', marginBottom: 0 }}>
+            <input type="checkbox" checked={!!el.has_na} onChange={e => onChange({ has_na: e.target.checked })} />
+            Include N/A option
+          </label>
+          <LikertGroupItemsEditor items={el.items || []} onChange={items => onChange({ items })} />
         </div>
       )}
 
@@ -275,10 +329,36 @@ function OptionsEditor({ options, onChange }) {
   )
 }
 
+function LikertGroupItemsEditor({ items, onChange }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+      <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Statements</span>
+      {items.map((item, i) => (
+        <div key={item.id} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <span style={{ fontSize: 12, color: 'var(--text-muted)', minWidth: 18, textAlign: 'right' }}>{i + 1}.</span>
+          <input
+            value={item.label || ''}
+            onChange={e => { const arr = items.map((it, j) => j === i ? { ...it, label: e.target.value } : it); onChange(arr) }}
+            placeholder="Statement text"
+            style={{ flex: 1, fontSize: 13 }}
+          />
+          <button className="btn btn-ghost btn-icon btn-sm" onClick={() => onChange(items.filter((_, j) => j !== i))}><Trash2 size={12} /></button>
+        </div>
+      ))}
+      <button className="btn btn-ghost btn-sm" onClick={() => onChange([...items, { id: newId(), label: '' }])} style={{ alignSelf: 'flex-start', fontSize: 12 }}>
+        <Plus size={12} /> Add Statement
+      </button>
+    </div>
+  )
+}
+
 function makeElement(type) {
   const base = { id: newId(), type, label: '', required: false }
   if (type === 'multiple_choice' || type === 'multiselect') return { ...base, options: ['Option 1', 'Option 2'] }
-  if (type === 'likert') return { ...base, scale: 5, low_label: '', high_label: '' }
+  if (type === 'rating') return { ...base, options: ['Option 1', 'Option 2', 'Option 3', 'Option 4'] }
+  if (type === 'likert') return { ...base, scale: 5, low_label: '', high_label: '', has_na: false }
+  if (type === 'likert_group') return { id: newId(), type: 'likert_group', label: '', description: '', scale: 5, low_label: '', high_label: '', has_na: false, items: [{ id: newId(), label: '' }] }
+  if (type === 'checkbox') return { id: newId(), type: 'checkbox', label: '', required: false }
   if (type === 'slider') return { ...base, min: 0, max: 100, step: 1, low_label: '', high_label: '' }
   if (type === 'text_block') return { id: newId(), type: 'text_block', content: '' }
   return base

@@ -3,6 +3,7 @@ import HomePage from './pages/HomePage'
 import ProjectPage from './pages/ProjectPage'
 import ReviewPage from './pages/ReviewPage'
 import SetupPage from './pages/SetupPage'
+import WorkspacePage from './pages/WorkspacePage'
 
 export default function App() {
   return (
@@ -12,6 +13,7 @@ export default function App() {
         <Route path="/project/:projectId" element={<ProjectPage />} />
         <Route path="/project/:projectId/setup" element={<SetupPage />} />
         <Route path="/review/:reviewId" element={<ReviewPage />} />
+        <Route path="/workspace/:reviewId" element={<WorkspacePage />} />
       </Routes>
     </HashRouter>
   )

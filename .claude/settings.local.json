@@ -92,7 +92,11 @@
       "Bash(node --check \"/Users/nihanthpinnaka/Documents/SDMo App/electron/mediaLinks.js\")",
       "Bash(node --check \"/Users/nihanthpinnaka/Documents/SDMo App/electron/ipc/media.js\")",
       "Bash(node --check \"/Users/nihanthpinnaka/Documents/SDMo App/electron/ipc/encounters.js\")",
-      "Bash(node --check \"/Users/nihanthpinnaka/Documents/SDMo App/electron/db.js\")"
+      "Bash(node --check \"/Users/nihanthpinnaka/Documents/SDMo App/electron/db.js\")",
+      "Bash(python3 -c ' *)",
+      "Read(//Users/nihanthpinnaka/Library/Application Support/Claude/local-agent-mode-sessions/skills-plugin/c9db9cc5-7c07-4960-9084-7d41912f482d/5371df74-3b8a-4320-a2a8-114a6257c043/skills/pptx/**)",
+      "Bash(extract-text \"/Users/nihanthpinnaka/Downloads/SDMo distinctions draft.pptx\")",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:5173)"
     ]
   }
 }

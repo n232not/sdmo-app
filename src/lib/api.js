@@ -96,6 +96,13 @@ export const api = isElectron ? window.api : {
   markMediaNotApplicable: async () => true,
   clearMediaLink: async () => true,
   browseMediaFile: async () => null,
+  openWorkspaceWindow: async () => null,
+  closeWorkspaceWindow: async () => null,
+  notifyReviewUpdate: async () => null,
+  onReviewUpdated: () => {},
+  offReviewUpdated: () => {},
+  onWorkspaceClosed: () => {},
+  offWorkspaceClosed: () => {},
 }
 
 export function formatTime(seconds) {

@@ -1,5 +1,11 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
+// Store wrapper functions so we can pass the exact reference to removeListener.
+// Anonymous wrappers created in .on() calls can't be removed with the original cb.
+let _configUpdateWrapper = null
+let _reviewUpdatedWrapper = null
+let _workspaceClosedWrapper = null
+
 contextBridge.exposeInMainWorld('api', {
   // Projects
   listProjects: () => ipcRenderer.invoke('projects:list'),
@@ -81,8 +87,17 @@ contextBridge.exposeInMainWorld('api', {
   joinFromCloudFolder: (provider, folderId, folderName) => ipcRenderer.invoke('sync:joinFromCloudFolder', provider, folderId, folderName),
   exportExcel: (projectId) => ipcRenderer.invoke('export:excel', projectId),
   syncAcceptConfigUpdate: (projectId, configData) => ipcRenderer.invoke('sync:acceptConfigUpdate', projectId, configData),
-  onConfigUpdateAvailable: (cb) => ipcRenderer.on('sync:configUpdateAvailable', (_, d) => cb(d)),
-  offConfigUpdateAvailable: (cb) => ipcRenderer.removeListener('sync:configUpdateAvailable', cb),
+  onConfigUpdateAvailable: (cb) => {
+    if (_configUpdateWrapper) ipcRenderer.removeListener('sync:configUpdateAvailable', _configUpdateWrapper)
+    _configUpdateWrapper = (_, d) => cb(d)
+    ipcRenderer.on('sync:configUpdateAvailable', _configUpdateWrapper)
+  },
+  offConfigUpdateAvailable: () => {
+    if (_configUpdateWrapper) {
+      ipcRenderer.removeListener('sync:configUpdateAvailable', _configUpdateWrapper)
+      _configUpdateWrapper = null
+    }
+  },
 
   // Cloud sync
   cloudConnectOneDrive: () => ipcRenderer.invoke('cloud:connectOneDrive'),
@@ -112,5 +127,30 @@ contextBridge.exposeInMainWorld('api', {
   // Window
   setFullscreen: (flag) => ipcRenderer.invoke('window:setFullscreen', flag),
   isFullscreen: () => ipcRenderer.invoke('window:isFullscreen'),
+  openWorkspaceWindow: (url) => ipcRenderer.invoke('window:openWorkspace', url),
+  closeWorkspaceWindow: (reviewId) => ipcRenderer.invoke('window:closeWorkspace', reviewId),
+  notifyReviewUpdate: (reviewId) => ipcRenderer.invoke('review:notifyUpdate', reviewId),
+  onReviewUpdated: (cb) => {
+    if (_reviewUpdatedWrapper) ipcRenderer.removeListener('review:updated', _reviewUpdatedWrapper)
+    _reviewUpdatedWrapper = (_, id) => cb(id)
+    ipcRenderer.on('review:updated', _reviewUpdatedWrapper)
+  },
+  offReviewUpdated: () => {
+    if (_reviewUpdatedWrapper) {
+      ipcRenderer.removeListener('review:updated', _reviewUpdatedWrapper)
+      _reviewUpdatedWrapper = null
+    }
+  },
+  onWorkspaceClosed: (cb) => {
+    if (_workspaceClosedWrapper) ipcRenderer.removeListener('workspace:closed', _workspaceClosedWrapper)
+    _workspaceClosedWrapper = (_, id) => cb(id)
+    ipcRenderer.on('workspace:closed', _workspaceClosedWrapper)
+  },
+  offWorkspaceClosed: () => {
+    if (_workspaceClosedWrapper) {
+      ipcRenderer.removeListener('workspace:closed', _workspaceClosedWrapper)
+      _workspaceClosedWrapper = null
+    }
+  },
 
 })

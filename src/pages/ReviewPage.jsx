@@ -2,8 +2,8 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   ChevronLeft, Plus, Maximize2, Minimize2,
-  Clock, Trash2, ChevronDown, CheckCircle2, Maximize, Edit2, AlertCircle,
-  Columns2, Rows2,
+  Clock, Trash2, ChevronDown, ChevronUp, CheckCircle2, Maximize, Edit2, AlertCircle,
+  Columns2, Rows2, ExternalLink,
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -35,6 +35,7 @@ export default function ReviewPage() {
   const [workspaceExpanded, setWorkspaceExpanded] = useState(false)
   const [layoutMode, setLayoutMode] = useState('vertical') // 'vertical' | 'horizontal'
   const [splitPct, setSplitPct] = useState(44) // video height% (vertical) or width% (horizontal)
+  const [workspaceMinimized, setWorkspaceMinimized] = useState(false)
 
   const [keybinds, setKeybinds] = useState([])
   const [videoUrl, setVideoUrl] = useState(null)
@@ -52,6 +53,35 @@ export default function ReviewPage() {
 
   useEffect(() => { load() }, [reviewId])
 
+  // Single function that refreshes submitted + form data from DB
+  function refreshReviewData(id) {
+    api.getReview(id).then(rev => {
+      if (!rev) return
+      setSubmitted(rev.status === 'submitted')
+      const respMap = {}
+      for (const fr of (rev.form_responses || [])) respMap[fr.form_id] = fr.responses
+      setFormResponses(respMap)
+    })
+  }
+
+  // Sync with pop-out workspace window
+  useEffect(() => {
+    function onReviewUpdated(updatedId) {
+      if (String(updatedId) === String(reviewId)) refreshReviewData(reviewId)
+    }
+    function onWorkspaceClosed(closedId) {
+      if (String(closedId) === String(reviewId)) setWorkspaceMinimized(false)
+      // Data refresh comes via the review:updated event emitted alongside workspace:closed in main.js
+    }
+    api.onReviewUpdated(onReviewUpdated)
+    api.onWorkspaceClosed(onWorkspaceClosed)
+    return () => {
+      api.offReviewUpdated()
+      api.offWorkspaceClosed()
+      api.closeWorkspaceWindow(reviewId)
+    }
+  }, [reviewId])
+
   // Sync fullscreen state when user exits via Escape
   useEffect(() => {
     async function checkFs() {
@@ -67,6 +97,13 @@ export default function ReviewPage() {
     setIsFullscreen(entering)
     setVideoExpanded(entering)
     await window.api.setFullscreen(entering)
+  }
+
+  async function handlePopOut() {
+    const base = window.location.href.split('#')[0]
+    const url = `${base}#/workspace/${reviewId}`
+    await api.openWorkspaceWindow(url)
+    setWorkspaceMinimized(true)
   }
 
   // Keybind listener
@@ -265,11 +302,13 @@ export default function ReviewPage() {
     await api.submitReview(reviewId, {})
     setSubmitted(true)
     setShowSubmit(false)
+    api.notifyReviewUpdate(reviewId).catch(() => {})
   }
 
   async function handleUnsubmit() {
     await api.unsubmitReview(reviewId)
     setSubmitted(false)
+    api.notifyReviewUpdate(reviewId).catch(() => {})
   }
 
   function seekTo(sec) {
@@ -388,11 +427,10 @@ export default function ReviewPage() {
               ref={videoPanelRef}
               style={{
                 background: '#000',
-                flexShrink: 0,
                 position: 'relative',
                 ...(isHoriz
-                  ? { width: videoExpanded ? '100%' : `${splitPct}%`, height: '100%' }
-                  : { height: videoExpanded ? '100%' : `${splitPct}%`, width: '100%' }),
+                  ? { width: (videoExpanded || workspaceMinimized) ? '100%' : `${splitPct}%`, height: '100%', flexShrink: videoExpanded || workspaceMinimized ? 0 : 0, flex: workspaceMinimized && !videoExpanded ? 1 : undefined }
+                  : { height: videoExpanded ? '100%' : workspaceMinimized ? undefined : `${splitPct}%`, flex: workspaceMinimized && !videoExpanded ? 1 : undefined, width: '100%', flexShrink: 0 }),
               }}
               onMouseEnter={() => setVideoHovered(true)}
               onMouseLeave={() => setVideoHovered(false)}
@@ -437,7 +475,7 @@ export default function ReviewPage() {
             </div>
 
             {/* Drag divider */}
-            {!videoExpanded && (
+            {!videoExpanded && !workspaceMinimized && (
               <div
                 onMouseDown={onDividerMouseDown}
                 style={{
@@ -457,8 +495,14 @@ export default function ReviewPage() {
 
             {/* Workspace panel */}
             {!videoExpanded && (
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0, minHeight: 0, background: 'var(--bg)' }}>
-                {/* Add Timestamp bar */}
+              <div style={{
+                display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0, background: 'var(--bg)',
+                ...(workspaceMinimized
+                  ? { flexShrink: 0, height: 82 }
+                  : { flex: 1, minHeight: 0 }),
+                transition: 'height 0.2s ease',
+              }}>
+                {/* Add Timestamp bar — hidden when minimized */}
                 <div style={{ padding: '7px 14px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
                   <button className="btn btn-secondary btn-sm" onClick={addTimestamp} disabled={submitted}>
                     <Plus size={13} /> Add Timestamp
@@ -471,23 +515,52 @@ export default function ReviewPage() {
                     <div style={{ display: 'flex', alignItems: 'center', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
                       <div className="tabs" style={{ flex: 1, borderBottom: 'none' }}>
                         {workspaceTabs.map((tab, i) => (
-                          <button key={tab.id} className={`tab-btn ${activeTab === i ? 'active' : ''}`} onClick={() => setActiveTab(i)}>
+                          <button
+                            key={tab.id}
+                            className={`tab-btn ${activeTab === i ? 'active' : ''}`}
+                            onClick={() => { setActiveTab(i); if (workspaceMinimized) setWorkspaceMinimized(false) }}
+                          >
                             {tab.label}
                           </button>
                         ))}
                       </div>
-                      <button className="btn btn-ghost btn-icon btn-sm" style={{ margin: '0 8px' }} title="Expand workspace" onClick={() => setWorkspaceExpanded(true)}>
-                        <Maximize size={14} />
-                      </button>
+                      {/* Workspace controls */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 2, padding: '0 6px', flexShrink: 0 }}>
+                        <button
+                          className="btn btn-ghost btn-icon btn-sm"
+                          title={workspaceMinimized ? 'Restore workspace' : 'Minimize workspace'}
+                          onClick={() => setWorkspaceMinimized(m => !m)}
+                        >
+                          {workspaceMinimized ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                        </button>
+                        <button
+                          className="btn btn-ghost btn-icon btn-sm"
+                          title="Open workspace in separate window"
+                          onClick={handlePopOut}
+                        >
+                          <ExternalLink size={13} />
+                        </button>
+                        <button
+                          className="btn btn-ghost btn-icon btn-sm"
+                          title="Expand workspace fullscreen"
+                          onClick={() => setWorkspaceExpanded(true)}
+                        >
+                          <Maximize size={14} />
+                        </button>
+                      </div>
                     </div>
-                    <div style={{ flex: 1, overflow: 'auto', padding: 20 }}>
-                      {workspaceContent}
-                    </div>
+                    {!workspaceMinimized && (
+                      <div style={{ flex: 1, overflow: 'auto', padding: 20 }}>
+                        {workspaceContent}
+                      </div>
+                    )}
                   </>
                 ) : (
-                  <div className="empty-state" style={{ flex: 1 }}>
-                    <p className="text-sm">No workspace tabs configured for this media type.</p>
-                  </div>
+                  !workspaceMinimized && (
+                    <div className="empty-state" style={{ flex: 1 }}>
+                      <p className="text-sm">No workspace tabs configured for this media type.</p>
+                    </div>
+                  )
                 )}
               </div>
             )}
