@@ -348,7 +348,7 @@ export default function ProjectPage() {
               <AlertTriangle size={15} style={{ color: '#d97706', flexShrink: 0 }} />
               <span style={{ color: '#92400e', flex: 1 }}>
                 {mediaHealth.unlinked + mediaHealth.broken} of {mediaHealth.total} media file{mediaHealth.total !== 1 ? 's' : ''} {mediaHealth.broken > 0 && mediaHealth.unlinked > 0 ? 'are not linked or missing' : mediaHealth.broken > 0 ? 'cannot be found on disk' : 'are not linked on this machine'}.
-                {!mediaHealth.hasMediaFolder ? ' Set a media folder in Settings.' : ' Go to Settings → Media Folder and scan to relink.'}
+                {!mediaHealth.hasBaseFolder ? ' Set a base folder in Settings → Media Folder.' : ' Go to Settings → Media Folder to auto-link or manually locate files.'}
               </span>
               <button className="btn btn-secondary btn-sm" style={{ flexShrink: 0 }} onClick={() => navigate(`/project/${projectId}/setup?section=4`)}>Fix</button>
             </div>
@@ -528,6 +528,13 @@ function EncounterRow({ encounter, expanded, onToggle, mediaTypes, onAddReview, 
   )
 }
 
+function linkStatusBadge(status) {
+  if (!status || status === 'linked') return null
+  if (status === 'missing') return <span style={{ fontSize: 10, fontWeight: 600, color: '#ef4444', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 3, padding: '1px 5px' }}>File missing</span>
+  if (status === 'not_applicable') return <span style={{ fontSize: 10, color: 'var(--text-muted)', background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 3, padding: '1px 5px' }}>N/A</span>
+  return <span style={{ fontSize: 10, fontWeight: 600, color: '#d97706', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 3, padding: '1px 5px' }}>Not linked</span>
+}
+
 function MediaRow({ mediaFile, mediaTypes, onAddReview, onOpenReview, onDeleteReview }) {
   const Icon = MEDIA_ICONS[mediaFile.file_type] || File
   const required = mediaFile.reviews_required
@@ -544,6 +551,7 @@ function MediaRow({ mediaFile, mediaTypes, onAddReview, onOpenReview, onDeleteRe
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
           <Icon size={14} color="var(--text-secondary)" style={{ flexShrink: 0 }} />
           <span style={{ fontWeight: 500, fontSize: 13 }} className="truncate">{mediaFile.name}</span>
+          {linkStatusBadge(mediaFile.link_status)}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
           {mediaType && (

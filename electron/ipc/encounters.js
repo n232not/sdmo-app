@@ -1,6 +1,7 @@
 const { getDb } = require('../db')
 const crypto = require('crypto')
 const { bumpConfigVersion, scheduleSync } = require('../sync')
+const { resolveLink } = require('../mediaLinks')
 
 module.exports = function (ipcMain) {
   ipcMain.handle('encounters:list', (_, projectId) => {
@@ -13,6 +14,9 @@ module.exports = function (ipcMain) {
         const reviews = db.prepare('SELECT id, reviewer_name, status, created_at, submitted_at FROM reviews WHERE media_file_id=? AND deleted_at IS NULL').all(m.id)
         m.reviews = reviews
         m.reviews_completed = reviews.filter(r => r.status === 'submitted').length
+        const { status, resolved_path } = resolveLink(db, m.id, enc.project_id)
+        m.link_status = status
+        m.resolved_path = resolved_path
       }
       enc.media = media
       enc.completed = media.length > 0 && media.every(m =>

@@ -100,6 +100,15 @@ contextBridge.exposeInMainWorld('api', {
   scanMediaFolder: (folderPath, projectId) => ipcRenderer.invoke('fs:scanMediaFolder', folderPath, projectId),
   mediaHealthCheck: (projectId) => ipcRenderer.invoke('media:healthCheck', projectId),
 
+  // File linking
+  getBaseFolder: (projectId) => ipcRenderer.invoke('media:getBaseFolder', projectId),
+  setBaseFolder: (projectId, folderPath) => ipcRenderer.invoke('media:setBaseFolder', projectId, folderPath),
+  autolink: (projectId) => ipcRenderer.invoke('media:autolink', projectId),
+  setMediaLink: (mediaFileId, projectId, localPath) => ipcRenderer.invoke('media:setLink', mediaFileId, projectId, localPath),
+  markMediaNotApplicable: (mediaFileId) => ipcRenderer.invoke('media:markNotApplicable', mediaFileId),
+  clearMediaLink: (mediaFileId) => ipcRenderer.invoke('media:clearLink', mediaFileId),
+  browseMediaFile: (mediaFileId) => ipcRenderer.invoke('media:browseFile', mediaFileId),
+
   // Window
   setFullscreen: (flag) => ipcRenderer.invoke('window:setFullscreen', flag),
   isFullscreen: () => ipcRenderer.invoke('window:isFullscreen'),

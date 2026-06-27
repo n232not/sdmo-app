@@ -32,6 +32,8 @@ Click **[Releases](https://github.com/n232not/sdmo-app/releases)** on the right 
 
 ## What SDMo Does
 
+SDMo allows you to code patient encounters within a structured digital app. All patient encounter files (videos, transcripts, etc) are stored locally on your own computer while the coding information can be synced to the cloud. This maintains hipaa confidentiality but also allows multiple users to work on the same coding project simultaneously
+
 SDMo organizes research coding sessions around **Projects**, **Encounters**, and **Reviews**.
 
 ### Projects
@@ -77,7 +79,7 @@ Open any project and click **Settings** in the sidebar.
 
 | Tab | What it does |
 |---|---|
-| Overview | Project name and description |
+| Overview | Instructions and FAQs on the Setup process |
 | Forms | Create structured questionnaires for coders to fill out |
 | Instructions | Add reference documents (markdown or PDF) |
 | Media Types | Define types of files (e.g. "Video", "Audio") and their timestamp tags |
@@ -88,7 +90,7 @@ Open any project and click **Settings** in the sidebar.
 | Access | Set an admin password to protect project settings |
 | Deleted Reviews | View and restore soft-deleted reviews |
 
----
+--
 
 ## Media Folder Structure
 

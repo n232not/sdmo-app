@@ -42,6 +42,9 @@ export default function ReviewPage() {
   const [submitted, setSubmitted] = useState(false)
   const [loading, setLoading] = useState(true)
   const [validationErrors, setValidationErrors] = useState([])
+  const [linkModal, setLinkModal] = useState(null) // null | 'not_linked' | 'missing'
+  const [linkSaving, setLinkSaving] = useState(false)
+  const [encProjectId, setEncProjectId] = useState(null)
 
   const splitDragRef = useRef(null)
   const mainAreaRef = useRef(null)
@@ -98,13 +101,24 @@ export default function ReviewPage() {
     setMediaFile(mf)
     if (!mf?.encounter_id) { setLoading(false); return }
 
+    // Check link status — show modal if file not accessible on this machine
+    if (mf.link_status === 'not_linked' || mf.link_status === 'missing') {
+      setLinkModal(mf.link_status)
+      const enc = await api.getEncounter(mf.encounter_id)
+      if (enc) setEncProjectId(enc.project_id)
+      setLoading(false)
+      return
+    }
+    setLinkModal(null)
+
     // Parallel: video URL + encounter
     const [url, enc] = await Promise.all([
-      api.getVideoUrl(mf.file_path || ''),
+      api.getVideoUrl(mf.resolved_path || mf.file_path || ''),
       api.getEncounter(mf.encounter_id),
     ])
     setVideoUrl(url)
     if (!enc) { setLoading(false); return }
+    setEncProjectId(enc.project_id)
 
     // Parallel: project + media types
     const [proj, allTypes] = await Promise.all([
@@ -136,6 +150,24 @@ export default function ReviewPage() {
     setInstructions(newInstructions)
 
     setLoading(false)
+  }
+
+  async function handleLinkFile() {
+    if (!mediaFile) return
+    setLinkSaving(true)
+    const filePath = await api.browseMediaFile(mediaFile.id)
+    if (filePath) {
+      await api.setMediaLink(mediaFile.id, encProjectId, filePath)
+      setLinkModal(null)
+      load()
+    }
+    setLinkSaving(false)
+  }
+
+  async function handleMarkNA() {
+    if (!mediaFile) return
+    await api.markMediaNotApplicable(mediaFile.id)
+    navigate(-1)
   }
 
   // --- Drag-to-resize split ---
@@ -250,6 +282,37 @@ export default function ReviewPage() {
   const isVideo = mediaFile?.file_type === 'video'
 
   if (loading) return <div className="empty-state" style={{ height: '100vh' }}><div className="spinner" /></div>
+
+  if (linkModal) {
+    const isMissing = linkModal === 'missing'
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)', padding: 40 }}>
+        <div style={{ maxWidth: 440, width: '100%', background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 12, padding: 32, display: 'flex', flexDirection: 'column', gap: 20 }}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 8 }}>
+              {isMissing ? 'File cannot be found' : 'File not linked on this machine'}
+            </div>
+            <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+              {isMissing
+                ? <>The file <strong>{mediaFile?.name}</strong> was previously linked but cannot be found on disk. It may have been moved or renamed.</>
+                : <>The file <strong>{mediaFile?.name}</strong> hasn't been linked to a local path on this machine yet.</>}
+            </div>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <button className="btn btn-primary" onClick={handleLinkFile} disabled={linkSaving}>
+              {linkSaving ? 'Opening…' : isMissing ? 'Locate file…' : 'Browse to file…'}
+            </button>
+            <button className="btn btn-secondary" onClick={handleMarkNA}>
+              I don't have this file (mark N/A)
+            </button>
+            <button className="btn btn-ghost" onClick={() => navigate(-1)}>
+              Go back
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   const currentTab = workspaceTabs[activeTab]
   const workspaceContent = (

@@ -60,6 +60,11 @@ export default function SetupPage() {
   const [folderLinkInput, setFolderLinkInput] = useState('')
   const [folderLinkError, setFolderLinkError] = useState('')
   const [folderLinkLoading, setFolderLinkLoading] = useState(false)
+  // File linking
+  const [baseFolder, setBaseFolder] = useState('')
+  const [autolinkResult, setAutolinkResult] = useState(null)
+  const [autolinking, setAutolinking] = useState(false)
+  const [linkSaving, setLinkSaving] = useState(null) // mediaFileId being linked
 
   useEffect(() => { load() }, [projectId])
 
@@ -102,6 +107,10 @@ export default function SetupPage() {
     // Load per-project reviewer name
     const projName = await api.getProjectName(Number(projectId))
     setProjectReviewerName(projName || '')
+
+    // Load base folder for file linking
+    const bf = await api.getBaseFolder(Number(projectId))
+    setBaseFolder(bf || '')
 
     const hasPw = proj?.has_password ?? false
     setHasPassword(hasPw)
@@ -294,6 +303,49 @@ export default function SetupPage() {
   async function handleSelectFolder() {
     const path = await api.selectFolder()
     if (path) setMediaFolder(path)
+  }
+
+  async function handleSelectBaseFolder() {
+    const p = await api.selectFolder()
+    if (p) setBaseFolder(p)
+  }
+
+  async function handleSaveBaseFolder() {
+    if (!baseFolder) return
+    setSaving(true)
+    await api.setBaseFolder(Number(projectId), baseFolder)
+    setSaving(false)
+    setAutolinkResult(null)
+    load()
+  }
+
+  async function handleAutolink() {
+    setAutolinking(true)
+    setAutolinkResult(null)
+    const result = await api.autolink(Number(projectId))
+    setAutolinkResult(result)
+    setAutolinking(false)
+    load()
+  }
+
+  async function handleManualLink(mediaFileId) {
+    setLinkSaving(mediaFileId)
+    const filePath = await api.browseMediaFile(mediaFileId)
+    if (filePath) {
+      await api.setMediaLink(mediaFileId, Number(projectId), filePath)
+      load()
+    }
+    setLinkSaving(null)
+  }
+
+  async function handleMarkNA(mediaFileId) {
+    await api.markMediaNotApplicable(mediaFileId)
+    load()
+  }
+
+  async function handleClearLink(mediaFileId) {
+    await api.clearMediaLink(mediaFileId)
+    load()
   }
 
   if (loading) return <div className="empty-state" style={{ height: '100vh' }}><div className="spinner" /></div>
@@ -607,126 +659,190 @@ export default function SetupPage() {
           )}
 
           {section === 4 && (
-            <div style={{ maxWidth: 560 }}>
+            <div style={{ maxWidth: 600 }}>
               <h2 style={{ marginBottom: 6 }}>Media Folder</h2>
-              <p className="text-secondary" style={{ marginBottom: 20, fontSize: 13 }}>
-                Point to the folder on your machine that contains the encounter subfolders. The app reads files directly from here — nothing is copied or uploaded.
+              <p className="text-secondary" style={{ marginBottom: 24, fontSize: 13 }}>
+                Link your local media files to this project. The app reads files directly — nothing is copied or uploaded.
               </p>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+              {/* ── YOUR LOCAL FILES (all users) ── */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 14, marginBottom: 28 }}>
+                <h3 style={{ fontSize: 14, fontWeight: 600, margin: 0 }}>Your Files on This Machine</h3>
+                <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: 0 }}>
+                  Set a base folder and click <strong>Auto-link</strong> — the app will match files by name. You can also link individual files manually below.
+                </p>
                 <div className="form-field">
-                  <label>Folder Path</label>
+                  <label>Base Folder</label>
                   <div style={{ display: 'flex', gap: 8 }}>
-                    <input value={mediaFolder} onChange={e => setMediaFolder(e.target.value)} placeholder="/path/to/media/folder" />
-                    <button className="btn btn-secondary" style={{ flexShrink: 0 }} onClick={handleSelectFolder}>
+                    <input value={baseFolder} onChange={e => setBaseFolder(e.target.value)} placeholder="/path/to/your/media/folder" />
+                    <button className="btn btn-secondary" style={{ flexShrink: 0 }} onClick={handleSelectBaseFolder}>
                       <FolderOpen size={14} /> Browse
                     </button>
                   </div>
                   <span className="text-muted text-sm" style={{ marginTop: 4 }}>
-                    Structure: Media Folder → Encounter Folders → Media Files
+                    Auto-link searches this folder (and any subfolders) for files matching the project's media names.
                   </span>
                 </div>
-                <button className="btn btn-secondary" onClick={async () => {
-                  if (!mediaFolder) return
-                  setSaving(true)
-                  await api.updateProject(projectId, { ...project, media_folder: mediaFolder })
-                  setSaving(false)
-                  setScanResult(null)
-                  load()
-                }} disabled={!mediaFolder || saving}>
-                  {saving ? 'Saving…' : 'Save Folder Path'}
-                </button>
-
-                {(isUnlocked || !hasPassword) && (
-                  <div style={{ borderTop: '1px solid var(--border)', paddingTop: 16 }}>
-                    <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>
-                      <strong>Scan for new encounters</strong> — scans the folder above and adds any new subfolders/files to the project. Only the project owner can do this.
-                    </p>
-                    <button className="btn btn-primary" onClick={handleScanFolder} disabled={!mediaFolder || saving}>
-                      {saving ? 'Scanning…' : 'Scan Folder'}
-                    </button>
-                    {scanResult && (() => {
-                      const { encountersAdded, encountersLinked, filesAdded, filesLinked, directMediaFiles, totalSubfolders } = scanResult
-                      if (directMediaFiles > 0) {
-                        return (
-                          <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', color: '#92400e', padding: '12px 14px', borderRadius: 8, fontSize: 13, display: 'flex', gap: 10, marginTop: 12 }}>
-                            <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 1 }} />
-                            <div>
-                              <strong>Wrong folder level detected.</strong> This folder contains media files directly. SDMo expects each encounter to be its own subfolder.
-                              <br /><br />
-                              <strong>Expected structure:</strong>
-                              <pre style={{ margin: '6px 0 0', fontSize: 11, fontFamily: 'monospace', lineHeight: 1.6, background: 'rgba(0,0,0,0.05)', padding: '6px 8px', borderRadius: 4 }}>{`SelectedFolder/\n  Patient001/\n    consult.mp4\n  Patient002/\n    consult.mp4`}</pre>
-                              <br />
-                              Select the <em>parent</em> folder that contains all the encounter subfolders, not the encounter folder itself.
-                            </div>
-                          </div>
-                        )
-                      }
-                      if (totalSubfolders === 0) {
-                        return (
-                          <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', color: '#92400e', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginTop: 12 }}>
-                            <strong>No subfolders found.</strong> This folder appears to be empty or contains only files. Each encounter should be a subfolder inside the selected folder.
-                          </div>
-                        )
-                      }
-                      const nothingNew = encountersAdded === 0 && (encountersLinked || 0) === 0 && filesAdded === 0 && (filesLinked || 0) === 0
-                      const stillMissingEarly = (scanResult.stillUnlinked || 0) + (scanResult.stillBroken || 0)
-                      if (nothingNew && stillMissingEarly === 0) {
-                        return (
-                          <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-secondary)', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginTop: 12 }}>
-                            ✓ All {totalSubfolders} folder{totalSubfolders !== 1 ? 's' : ''} linked, no new files found.
-                          </div>
-                        )
-                      }
-                      if (nothingNew && stillMissingEarly > 0) {
-                        return (
-                          <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', color: '#92400e', padding: '10px 14px', borderRadius: 8, fontSize: 13, display: 'flex', gap: 8, marginTop: 12 }}>
-                            <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
-                            <div>
-                              <strong>{stillMissingEarly} file{stillMissingEarly !== 1 ? 's' : ''} in the project have no match in this folder.</strong>
-                              {' '}Make sure each encounter has a subfolder named exactly as it appears in the project (e.g. <em>Encounter 1</em> → a folder named "Encounter 1"). If an encounter was renamed, rename the folder to match.
-                            </div>
-                          </div>
-                        )
-                      }
-                      const parts = []
-                      if (encountersAdded > 0) parts.push(`${encountersAdded} new encounter${encountersAdded !== 1 ? 's' : ''} added`)
-                      if ((encountersLinked || 0) > 0) parts.push(`${encountersLinked} encounter folder${encountersLinked !== 1 ? 's' : ''} linked`)
-                      if (filesAdded > 0) parts.push(`${filesAdded} new file${filesAdded !== 1 ? 's' : ''} added`)
-                      if ((filesLinked || 0) > 0) parts.push(`${filesLinked} file${filesLinked !== 1 ? 's' : ''} relinked`)
-                      const stillMissing = (scanResult.stillUnlinked || 0) + (scanResult.stillBroken || 0)
-                      return (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
-                          {parts.length > 0 && (
-                            <div style={{ background: 'var(--success-light)', color: 'var(--success)', padding: '10px 14px', borderRadius: 8, fontSize: 13 }}>
-                              ✓ {parts.join(', ')}.
-                            </div>
-                          )}
-                          {stillMissing > 0 && (
-                            <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', color: '#92400e', padding: '10px 14px', borderRadius: 8, fontSize: 13, display: 'flex', gap: 8 }}>
-                              <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
-                              <div>
-                                <strong>{stillMissing} file{stillMissing !== 1 ? 's' : ''} still not linked</strong> — {scanResult.stillBroken > 0 ? `${scanResult.stillBroken} path${scanResult.stillBroken !== 1 ? 's' : ''} no longer exist on disk` : ''}{scanResult.stillBroken > 0 && scanResult.stillUnlinked > 0 ? ', ' : ''}{scanResult.stillUnlinked > 0 ? `${scanResult.stillUnlinked} not found in this folder` : ''}.
-                                {' '}Make sure the folder contains a subfolder for each encounter, named exactly as it appears in the project.
-                              </div>
-                            </div>
-                          )}
-                          {stillMissing === 0 && parts.length === 0 && (
-                            <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-secondary)', padding: '10px 14px', borderRadius: 8, fontSize: 13 }}>
-                              ✓ All files linked — nothing new to import.
-                            </div>
-                          )}
-                        </div>
-                      )
-                    })()}
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button className="btn btn-secondary" onClick={handleSaveBaseFolder} disabled={!baseFolder || saving}>
+                    {saving ? 'Saving…' : 'Save Base Folder'}
+                  </button>
+                  <button className="btn btn-primary" onClick={handleAutolink} disabled={!baseFolder || autolinking}>
+                    <RefreshCw size={13} style={{ animation: autolinking ? 'spin 1s linear infinite' : 'none' }} />
+                    {autolinking ? 'Linking…' : 'Auto-link Files'}
+                  </button>
+                </div>
+                {autolinkResult && !autolinkResult.error && (
+                  <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 14px', fontSize: 13 }}>
+                    {autolinkResult.linked > 0
+                      ? <span style={{ color: 'var(--success)' }}>✓ {autolinkResult.linked} file{autolinkResult.linked !== 1 ? 's' : ''} linked</span>
+                      : <span style={{ color: 'var(--text-muted)' }}>No new files linked</span>}
+                    {autolinkResult.skipped > 0 && <span style={{ color: 'var(--text-muted)', marginLeft: 10 }}>· {autolinkResult.skipped} already linked</span>}
+                    {autolinkResult.ambiguous > 0 && <span style={{ color: '#d97706', marginLeft: 10 }}>· {autolinkResult.ambiguous} ambiguous (multiple matches) — link manually below</span>}
+                    {autolinkResult.notFound > 0 && <span style={{ color: 'var(--text-muted)', marginLeft: 10 }}>· {autolinkResult.notFound} not found in folder</span>}
                   </div>
                 )}
-
-                {!isUnlocked && hasPassword && (
-                  <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', padding: '10px 14px', borderRadius: 8, fontSize: 13, color: 'var(--text-secondary)' }}>
-                    Only the project owner can scan for new encounters. Save your folder path above so the app knows where your local media files are.
+                {autolinkResult?.error && (
+                  <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: '#b91c1c' }}>
+                    {autolinkResult.error}
                   </div>
                 )}
               </div>
+
+              {/* ── PER-FILE LINK STATUS ── */}
+              {encounters.length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 28 }}>
+                  <h3 style={{ fontSize: 14, fontWeight: 600, margin: 0 }}>File Link Status</h3>
+                  {encounters.map(enc => (
+                    <div key={enc.id} style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+                      <div style={{ padding: '8px 12px', background: 'var(--bg-secondary)', fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>
+                        {enc.name}
+                      </div>
+                      {(enc.media || []).length === 0 && (
+                        <div style={{ padding: '8px 14px', fontSize: 12, color: 'var(--text-muted)' }}>No media files</div>
+                      )}
+                      {(enc.media || []).map(mf => {
+                        const status = mf.link_status || 'not_linked'
+                        const busy = linkSaving === mf.id
+                        return (
+                          <div key={mf.id} style={{ padding: '8px 14px', borderTop: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 10 }}>
+                            <LinkStatusDot status={status} />
+                            <span style={{ fontSize: 13, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{mf.name}</span>
+                            <span style={{ fontSize: 11, color: statusColor(status), flexShrink: 0 }}>
+                              {status === 'linked' ? 'Linked' : status === 'missing' ? 'File missing' : status === 'not_applicable' ? 'N/A' : 'Not linked'}
+                            </span>
+                            <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+                              {status !== 'not_applicable' && (
+                                <button className="btn btn-ghost btn-sm" style={{ fontSize: 11, padding: '2px 8px', height: 22 }}
+                                  onClick={() => handleManualLink(mf.id)} disabled={busy}>
+                                  {busy ? '…' : status === 'linked' ? 'Relink' : status === 'missing' ? 'Locate' : 'Link'}
+                                </button>
+                              )}
+                              {status !== 'not_applicable' && (
+                                <button className="btn btn-ghost btn-sm" style={{ fontSize: 11, padding: '2px 8px', height: 22, color: 'var(--text-muted)' }}
+                                  onClick={() => handleMarkNA(mf.id)} title="Mark as not applicable — I don't have this file">
+                                  N/A
+                                </button>
+                              )}
+                              {status === 'not_applicable' && (
+                                <button className="btn btn-ghost btn-sm" style={{ fontSize: 11, padding: '2px 8px', height: 22 }}
+                                  onClick={() => handleClearLink(mf.id)}>
+                                  Clear
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* ── ADMIN: SCAN FOR NEW ENCOUNTERS ── */}
+              {(isUnlocked || !hasPassword) && (
+                <div style={{ borderTop: '1px solid var(--border)', paddingTop: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
+                  <h3 style={{ fontSize: 14, fontWeight: 600, margin: 0 }}>Add Encounters from Disk (Admin Only)</h3>
+                  <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: 0 }}>
+                    Scan a folder to automatically create encounters and media file records from its subfolder structure. Each subfolder becomes an encounter; files inside become media files.
+                  </p>
+                  <div className="form-field">
+                    <label>Scan Folder</label>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <input value={mediaFolder} onChange={e => setMediaFolder(e.target.value)} placeholder="/path/to/media/folder" />
+                      <button className="btn btn-secondary" style={{ flexShrink: 0 }} onClick={handleSelectFolder}>
+                        <FolderOpen size={14} /> Browse
+                      </button>
+                    </div>
+                    <span className="text-muted text-sm" style={{ marginTop: 4 }}>Expected: ScanFolder / EncounterName / mediafile.mp4</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button className="btn btn-secondary" onClick={async () => {
+                      if (!mediaFolder) return
+                      setSaving(true)
+                      await api.updateProject(projectId, { ...project, media_folder: mediaFolder })
+                      setSaving(false)
+                      setScanResult(null)
+                      load()
+                    }} disabled={!mediaFolder || saving}>
+                      {saving ? 'Saving…' : 'Save Path'}
+                    </button>
+                    <button className="btn btn-primary" onClick={handleScanFolder} disabled={!mediaFolder || saving}>
+                      {saving ? 'Scanning…' : 'Scan Folder'}
+                    </button>
+                  </div>
+                  {scanResult && (() => {
+                    const { encountersAdded, encountersLinked, filesAdded, filesLinked, directMediaFiles, totalSubfolders } = scanResult
+                    if (directMediaFiles > 0) {
+                      return (
+                        <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', color: '#92400e', padding: '12px 14px', borderRadius: 8, fontSize: 13, display: 'flex', gap: 10 }}>
+                          <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 1 }} />
+                          <div>
+                            <strong>Wrong folder level detected.</strong> This folder contains media files directly. SDMo expects each encounter to be its own subfolder.
+                            <pre style={{ margin: '6px 0 0', fontSize: 11, fontFamily: 'monospace', lineHeight: 1.6, background: 'rgba(0,0,0,0.05)', padding: '6px 8px', borderRadius: 4 }}>{`SelectedFolder/\n  Patient001/\n    consult.mp4\n  Patient002/\n    consult.mp4`}</pre>
+                          </div>
+                        </div>
+                      )
+                    }
+                    if (totalSubfolders === 0) {
+                      return (
+                        <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', color: '#92400e', padding: '10px 14px', borderRadius: 8, fontSize: 13 }}>
+                          <strong>No subfolders found.</strong> Each encounter should be a subfolder inside the selected folder.
+                        </div>
+                      )
+                    }
+                    const nothingNew = encountersAdded === 0 && (encountersLinked || 0) === 0 && filesAdded === 0 && (filesLinked || 0) === 0
+                    const stillMissing = (scanResult.stillUnlinked || 0) + (scanResult.stillBroken || 0)
+                    const parts = []
+                    if (encountersAdded > 0) parts.push(`${encountersAdded} new encounter${encountersAdded !== 1 ? 's' : ''} added`)
+                    if ((encountersLinked || 0) > 0) parts.push(`${encountersLinked} encounter${encountersLinked !== 1 ? 's' : ''} linked`)
+                    if (filesAdded > 0) parts.push(`${filesAdded} new file${filesAdded !== 1 ? 's' : ''} added`)
+                    if ((filesLinked || 0) > 0) parts.push(`${filesLinked} file${filesLinked !== 1 ? 's' : ''} relinked`)
+                    return (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        {(parts.length > 0 || nothingNew) && (
+                          <div style={{ background: 'var(--success-light)', color: 'var(--success)', padding: '10px 14px', borderRadius: 8, fontSize: 13 }}>
+                            {parts.length > 0 ? `✓ ${parts.join(', ')}.` : `✓ All ${totalSubfolders} folder${totalSubfolders !== 1 ? 's' : ''} up to date.`}
+                          </div>
+                        )}
+                        {stillMissing > 0 && (
+                          <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', color: '#92400e', padding: '10px 14px', borderRadius: 8, fontSize: 13, display: 'flex', gap: 8 }}>
+                            <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+                            <div><strong>{stillMissing} file{stillMissing !== 1 ? 's' : ''} not found in this folder.</strong> They may have been renamed or moved. Use "Link" in the file status list above to manually locate them.</div>
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })()}
+                </div>
+              )}
+              {!isUnlocked && hasPassword && (
+                <div style={{ borderTop: '1px solid var(--border)', paddingTop: 16 }}>
+                  <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', padding: '10px 14px', borderRadius: 8, fontSize: 13, color: 'var(--text-secondary)' }}>
+                    Only the project owner can scan for new encounters. Use the Base Folder and Auto-link above to link your local files.
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -863,6 +979,8 @@ function MediaFilesSection({ encounters, mediaTypes, locked, projectId, onReload
   const [renaming, setRenaming] = useState(null) // { type: 'encounter'|'file', id, projectId, name }
   const [deleteTarget, setDeleteTarget] = useState(null) // { type, id, name, reviewCount }
   const [deleteLoading, setDeleteLoading] = useState(false)
+  const [showAddEncounter, setShowAddEncounter] = useState(false)
+  const [newEncounterName, setNewEncounterName] = useState('')
   const isOwner = !locked
 
   async function handleTypeChange(mediaFile, newVal) {
@@ -902,9 +1020,10 @@ function MediaFilesSection({ encounters, mediaTypes, locked, projectId, onReload
   }
 
   async function handleAddEncounter() {
-    const name = window.prompt('New encounter name:')
-    if (!name?.trim()) return
-    await api.createEncounter(projectId, name.trim())
+    if (!newEncounterName.trim()) return
+    await api.createEncounter(projectId, newEncounterName.trim())
+    setNewEncounterName('')
+    setShowAddEncounter(false)
     onReload()
   }
 
@@ -924,7 +1043,7 @@ function MediaFilesSection({ encounters, mediaTypes, locked, projectId, onReload
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
         <h2 style={{ margin: 0 }}>Media Files</h2>
         {isOwner && (
-          <button className="btn btn-secondary btn-sm" onClick={handleAddEncounter}>+ Add Encounter</button>
+          <button className="btn btn-secondary btn-sm" onClick={() => { setNewEncounterName(''); setShowAddEncounter(true) }}>+ Add Encounter</button>
         )}
       </div>
       <p className="text-secondary" style={{ marginBottom: 20, fontSize: 13 }}>
@@ -1039,6 +1158,29 @@ function MediaFilesSection({ encounters, mediaTypes, locked, projectId, onReload
           </div>
         </div>
       )}
+
+      <Modal
+        open={showAddEncounter}
+        onClose={() => setShowAddEncounter(false)}
+        title="Add Encounter"
+        footer={
+          <>
+            <button className="btn btn-secondary" onClick={() => setShowAddEncounter(false)}>Cancel</button>
+            <button className="btn btn-primary" onClick={handleAddEncounter} disabled={!newEncounterName.trim()}>Add</button>
+          </>
+        }
+      >
+        <div className="form-field">
+          <label>Encounter Name</label>
+          <input
+            autoFocus
+            placeholder="e.g. Patient 001"
+            value={newEncounterName}
+            onChange={e => setNewEncounterName(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && handleAddEncounter()}
+          />
+        </div>
+      </Modal>
     </div>
   )
 }
@@ -1534,4 +1676,15 @@ function SetupSection({ title, description, items, onNew, onEdit, onDuplicate, o
       )}
     </div>
   )
+}
+
+function statusColor(status) {
+  if (status === 'linked') return 'var(--success)'
+  if (status === 'missing') return '#ef4444'
+  if (status === 'not_applicable') return 'var(--text-muted)'
+  return '#d97706'
+}
+
+function LinkStatusDot({ status }) {
+  return <span style={{ width: 8, height: 8, borderRadius: '50%', background: statusColor(status), flexShrink: 0, display: 'inline-block' }} />
 }

@@ -88,7 +88,14 @@ export const api = isElectron ? window.api : {
   checkManifest: async () => null,
   selectFolder: async () => null,
   scanMediaFolder: async () => ({ encountersAdded: 0, filesAdded: 0, directMediaFiles: 0, totalSubfolders: 0, stillUnlinked: 0, stillBroken: 0 }),
-  mediaHealthCheck: async () => ({ unlinked: 0, broken: 0, ok: 0, total: 0, hasMediaFolder: false, issues: [] }),
+  mediaHealthCheck: async () => ({ unlinked: 0, broken: 0, ok: 0, notApplicable: 0, total: 0, hasBaseFolder: false, issues: [] }),
+  getBaseFolder: async () => null,
+  setBaseFolder: async () => true,
+  autolink: async () => ({ linked: 0, skipped: 0, ambiguous: 0, notFound: 0 }),
+  setMediaLink: async () => true,
+  markMediaNotApplicable: async () => true,
+  clearMediaLink: async () => true,
+  browseMediaFile: async () => null,
 }
 
 export function formatTime(seconds) {
