@@ -11,7 +11,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: macos-13
+          - os: macos-latest
             platform: mac
             artifact: release/*.dmg
           - os: windows-latest
@@ -57,7 +57,9 @@ jobs:
 
       - name: Package (Mac)
         if: matrix.platform == 'mac'
-        run: npx electron-builder --mac
+        run: |
+          npx electron-builder --mac --arm64
+          npx electron-builder --mac --x64
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
