@@ -24,7 +24,7 @@ Click **[Releases](https://github.com/n232not/sdmo-app/releases)** on the right 
 
 **Mac:** Open the `.dmg` file, then drag the SDMo icon into your Applications folder.
 
-> If macOS says "SDMo cannot be opened because it is from an unidentified developer", open **System Settings → Privacy & Security**, scroll down, and click **Open Anyway**. This is expected for apps not distributed through the Mac App Store. If that also doesn't work, run 'xattr -cr /Applications/SDMo.app' in Terminal.
+==If macOS says "SDMo cannot be opened because it is from an unidentified developer", run 'xattr -cr /Applications/SDMo.app' in Terminal. This is expected since this app is not currently liscenced and is a testing version==
 
 **Windows:** Run the `.exe` installer and follow the prompts. If Windows Defender shows a warning, click **More info → Run anyway**.
 
