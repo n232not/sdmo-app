@@ -93,14 +93,14 @@ module.exports = function (ipcMain) {
   ipcMain.handle('media:create', (_, projectId, encounterId, name) => {
     const db = getDb()
     const result = db.prepare(
-      'INSERT INTO media_files (encounter_id, name, file_path, file_type, sync_id) VALUES (?, ?, ?, ?, ?)'
+      "INSERT INTO media_files (encounter_id, name, file_path, file_type, sync_id, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'))"
     ).run(encounterId, name.trim(), '', 'other', crypto.randomUUID())
     bumpAndSync(db, projectId)
     return { id: result.lastInsertRowid }
   })
 
   ipcMain.handle('media:getUrl', (_, filePath) => {
-    return `localfile://${filePath}`
+    return `localfile://${encodeURIComponent(filePath)}`
   })
 
   ipcMain.handle('fs:selectFolder', async () => {
@@ -131,7 +131,7 @@ module.exports = function (ipcMain) {
             enc = byName
             encountersLinked++
           } else {
-            const r = db.prepare('INSERT INTO encounters (project_id, name, folder_path, sync_id) VALUES (?,?,?,?)').run(projectId, dir.name, encounterPath, crypto.randomUUID())
+            const r = db.prepare("INSERT INTO encounters (project_id, name, folder_path, sync_id, updated_at) VALUES (?,?,?,?,datetime('now'))").run(projectId, dir.name, encounterPath, crypto.randomUUID())
             enc = { id: r.lastInsertRowid }
             encountersAdded++
           }
@@ -149,7 +149,7 @@ module.exports = function (ipcMain) {
             upsertLink(db, existing.id, filePath, false)
             filesLinked++
           } else {
-            const r = db.prepare('INSERT INTO media_files (encounter_id, name, file_path, file_type, sync_id) VALUES (?,?,?,?,?)').run(enc.id, file.name, filePath, fileType, crypto.randomUUID())
+            const r = db.prepare("INSERT INTO media_files (encounter_id, name, file_path, file_type, sync_id, updated_at) VALUES (?,?,?,?,?,datetime('now'))").run(enc.id, file.name, filePath, fileType, crypto.randomUUID())
             upsertLink(db, r.lastInsertRowid, filePath, false)
             filesAdded++
           }

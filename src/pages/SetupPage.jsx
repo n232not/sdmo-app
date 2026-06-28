@@ -457,7 +457,7 @@ export default function SetupPage() {
         </div>
 
         {/* Content */}
-        <div style={{ flex: 1, overflow: 'auto', padding: '28px 32px' }}>
+        <div style={{ flex: 1, minWidth: 0, overflow: 'auto', padding: '28px 32px' }}>
           {!isUnlocked && hasPassword && (
             <div style={{
               background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 8,
@@ -527,15 +527,23 @@ export default function SetupPage() {
 
           {section === 4 && (
             <MediaFilesSection
+              project={project}
               encounters={encounters}
               mediaTypes={mediaTypes}
               locked={!isUnlocked}
+              hasPassword={hasPassword}
               projectId={projectId}
+              mediaFolder={mediaFolder}
+              setMediaFolder={setMediaFolder}
+              saving={saving}
+              scanResult={scanResult}
               onReload={load}
               onTypeChange={load}
               onAddFile={handleCreateMediaFile}
               onBatchCreate={handleBatchCreate}
               onExportStructure={handleExportStructure}
+              onSelectFolder={handleSelectFolder}
+              onHandleScanFolder={handleScanFolder}
             />
           )}
 
@@ -776,90 +784,6 @@ export default function SetupPage() {
                 </div>
               )}
 
-              {/* ── ADMIN: SCAN FOR NEW ENCOUNTERS ── */}
-              {(isUnlocked || !hasPassword) && (
-                <div style={{ borderTop: '1px solid var(--border)', paddingTop: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
-                  <h3 style={{ fontSize: 14, fontWeight: 600, margin: 0 }}>Add Encounters from Disk (Admin Only)</h3>
-                  <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: 0 }}>
-                    Scan a folder to automatically create encounters and media file records from its subfolder structure. Each subfolder becomes an encounter; files inside become media files.
-                  </p>
-                  <div className="form-field">
-                    <label>Scan Folder</label>
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      <input value={mediaFolder} onChange={e => setMediaFolder(e.target.value)} placeholder="/path/to/media/folder" />
-                      <button className="btn btn-secondary" style={{ flexShrink: 0 }} onClick={handleSelectFolder}>
-                        <FolderOpen size={14} /> Browse
-                      </button>
-                    </div>
-                    <span className="text-muted text-sm" style={{ marginTop: 4 }}>Expected: ScanFolder / EncounterName / mediafile.mp4</span>
-                  </div>
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    <button className="btn btn-secondary" onClick={async () => {
-                      if (!mediaFolder) return
-                      setSaving(true)
-                      await api.updateProject(projectId, { ...project, media_folder: mediaFolder })
-                      setSaving(false)
-                      setScanResult(null)
-                      load()
-                    }} disabled={!mediaFolder || saving}>
-                      {saving ? 'Saving…' : 'Save Path'}
-                    </button>
-                    <button className="btn btn-primary" onClick={handleScanFolder} disabled={!mediaFolder || saving}>
-                      {saving ? 'Scanning…' : 'Scan Folder'}
-                    </button>
-                  </div>
-                  {scanResult && (() => {
-                    const { encountersAdded, encountersLinked, filesAdded, filesLinked, directMediaFiles, totalSubfolders } = scanResult
-                    if (directMediaFiles > 0) {
-                      return (
-                        <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', color: '#92400e', padding: '12px 14px', borderRadius: 8, fontSize: 13, display: 'flex', gap: 10 }}>
-                          <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 1 }} />
-                          <div>
-                            <strong>Wrong folder level detected.</strong> This folder contains media files directly. SDMo expects each encounter to be its own subfolder.
-                            <pre style={{ margin: '6px 0 0', fontSize: 11, fontFamily: 'monospace', lineHeight: 1.6, background: 'rgba(0,0,0,0.05)', padding: '6px 8px', borderRadius: 4 }}>{`SelectedFolder/\n  Patient001/\n    consult.mp4\n  Patient002/\n    consult.mp4`}</pre>
-                          </div>
-                        </div>
-                      )
-                    }
-                    if (totalSubfolders === 0) {
-                      return (
-                        <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', color: '#92400e', padding: '10px 14px', borderRadius: 8, fontSize: 13 }}>
-                          <strong>No subfolders found.</strong> Each encounter should be a subfolder inside the selected folder.
-                        </div>
-                      )
-                    }
-                    const nothingNew = encountersAdded === 0 && (encountersLinked || 0) === 0 && filesAdded === 0 && (filesLinked || 0) === 0
-                    const stillMissing = (scanResult.stillUnlinked || 0) + (scanResult.stillBroken || 0)
-                    const parts = []
-                    if (encountersAdded > 0) parts.push(`${encountersAdded} new encounter${encountersAdded !== 1 ? 's' : ''} added`)
-                    if ((encountersLinked || 0) > 0) parts.push(`${encountersLinked} encounter${encountersLinked !== 1 ? 's' : ''} linked`)
-                    if (filesAdded > 0) parts.push(`${filesAdded} new file${filesAdded !== 1 ? 's' : ''} added`)
-                    if ((filesLinked || 0) > 0) parts.push(`${filesLinked} file${filesLinked !== 1 ? 's' : ''} relinked`)
-                    return (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                        {(parts.length > 0 || nothingNew) && (
-                          <div style={{ background: 'var(--success-light)', color: 'var(--success)', padding: '10px 14px', borderRadius: 8, fontSize: 13 }}>
-                            {parts.length > 0 ? `✓ ${parts.join(', ')}.` : `✓ All ${totalSubfolders} folder${totalSubfolders !== 1 ? 's' : ''} up to date.`}
-                          </div>
-                        )}
-                        {stillMissing > 0 && (
-                          <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', color: '#92400e', padding: '10px 14px', borderRadius: 8, fontSize: 13, display: 'flex', gap: 8 }}>
-                            <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
-                            <div><strong>{stillMissing} file{stillMissing !== 1 ? 's' : ''} not found in this folder.</strong> They may have been renamed or moved. Use "Link" in the file status list above to manually locate them.</div>
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })()}
-                </div>
-              )}
-              {!isUnlocked && hasPassword && (
-                <div style={{ borderTop: '1px solid var(--border)', paddingTop: 16 }}>
-                  <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', padding: '10px 14px', borderRadius: 8, fontSize: 13, color: 'var(--text-secondary)' }}>
-                    Only the project owner can scan for new encounters. Use the Base Folder and Auto-link above to link your local files.
-                  </div>
-                </div>
-              )}
             </div>
           )}
 
@@ -992,7 +916,11 @@ function DeletedReviewsSection({ projectId }) {
   )
 }
 
-function MediaFilesSection({ encounters, mediaTypes, locked, projectId, onReload, onTypeChange, onAddFile, onBatchCreate, onExportStructure }) {
+function MediaFilesSection({
+  project, encounters, mediaTypes, locked, hasPassword, projectId, mediaFolder, setMediaFolder,
+  saving, scanResult, onReload, onTypeChange, onAddFile, onBatchCreate, onExportStructure,
+  onSelectFolder, onHandleScanFolder,
+}) {
   const [renaming, setRenaming] = useState(null) // { type: 'encounter'|'file', id, projectId, name }
   const [deleteTarget, setDeleteTarget] = useState(null) // { type, id, name, reviewCount }
   const [deleteLoading, setDeleteLoading] = useState(false)
@@ -1134,10 +1062,10 @@ function MediaFilesSection({ encounters, mediaTypes, locked, projectId, onReload
   )
 
   return (
-    <div style={{ maxWidth: 700 }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-        <h2 style={{ margin: 0 }}>Encounters</h2>
-        <div style={{ display: 'flex', gap: 6 }}>
+    <div style={{ maxWidth: 980, width: '100%', minWidth: 0 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, marginBottom: 6, flexWrap: 'wrap' }}>
+        <h2 style={{ margin: 0, flexShrink: 0 }}>Encounters</h2>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           {isOwner && (
             <>
               <button className="btn btn-ghost btn-sm" onClick={onExportStructure} title="Export encounter/file structure to Excel">
@@ -1158,39 +1086,76 @@ function MediaFilesSection({ encounters, mediaTypes, locked, projectId, onReload
       </div>
       <p className="text-secondary" style={{ marginBottom: 20, fontSize: 13 }}>
         {isOwner
-          ? 'Manage encounters and media file slots. Click a name to rename. Use the encounter selector to move a file. Use Files → Scan to import encounters from a folder on disk.'
+          ? 'Manage encounters and media file slots. Click a name to rename. Use the encounter selector to move a file. Scan a folder here to import encounters from disk.'
           : 'Assign a media type to each file slot. The type determines how many reviews are required and which tags are available.'}
       </p>
 
+      {isOwner && (
+        <div style={{ border: '1px solid var(--border)', borderRadius: 10, padding: 16, background: 'var(--bg)', display: 'flex', flexDirection: 'column', gap: 14, marginBottom: 20 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <h3 style={{ fontSize: 14, fontWeight: 600, margin: 0 }}>Add Encounters from Disk</h3>
+            <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: 0 }}>
+              Scan a folder to automatically create encounters and media file records from its subfolder structure. Each subfolder becomes an encounter; files inside become media files.
+            </p>
+          </div>
+          <div className="form-field" style={{ marginBottom: 0 }}>
+            <label>Scan Folder</label>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <input value={mediaFolder} onChange={e => setMediaFolder(e.target.value)} placeholder="/path/to/media/folder" style={{ flex: '1 1 320px', minWidth: 240 }} />
+              <button className="btn btn-secondary" style={{ flexShrink: 0 }} onClick={onSelectFolder}>
+                <FolderOpen size={14} /> Browse
+              </button>
+            </div>
+            <span className="text-muted text-sm" style={{ marginTop: 4 }}>Expected: ScanFolder / EncounterName / mediafile.mp4</span>
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button className="btn btn-secondary" onClick={async () => {
+              if (!mediaFolder) return
+              await api.updateProject(projectId, { ...project, media_folder: mediaFolder })
+              onReload()
+            }} disabled={!mediaFolder || saving}>
+              {saving ? 'Saving…' : 'Save Path'}
+            </button>
+            <button className="btn btn-primary" onClick={onHandleScanFolder} disabled={!mediaFolder || saving}>
+              {saving ? 'Scanning…' : 'Scan Folder'}
+            </button>
+          </div>
+          {scanResult && <ScanResultSummary scanResult={scanResult} />}
+        </div>
+      )}
+
       {encounters.length === 0 ? (
         <div className="empty-state" style={{ background: 'var(--bg-secondary)', borderRadius: 8, padding: '40px 20px' }}>
-          <p className="text-sm">{isOwner ? 'No encounters yet. Use "+ Add Encounter", "Batch Add", or scan a folder in the Files tab.' : 'No encounters yet.'}</p>
+          <p className="text-sm">{isOwner ? 'No encounters yet. Use "+ Add Encounter", "Batch Add", or scan a folder above.' : 'No encounters yet.'}</p>
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {encounters.map(enc => (
             <div key={enc.id} style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
-              <div style={{ padding: '8px 14px', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div style={{ padding: '8px 14px', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, minWidth: 0 }}>
                 {isOwner && (
                   <input type="checkbox" checked={selEnc.has(enc.id)} onChange={() => toggleEnc(enc.id)}
-                    title="Select encounter for bulk actions" style={{ flexShrink: 0, cursor: 'pointer', margin: 0 }} />
+                    title="Select encounter for bulk actions" style={{ width: 16, height: 16, cursor: 'pointer', margin: 0, flex: '0 0 16px' }} />
                 )}
-                {renaming?.type === 'encounter' && renaming.id === enc.id ? (
-                  <input autoFocus value={renaming.name}
-                    onChange={e => setRenaming(r => ({ ...r, name: e.target.value }))}
-                    onBlur={handleRenameCommit}
-                    onKeyDown={e => { if (e.key === 'Enter') handleRenameCommit(); if (e.key === 'Escape') setRenaming(null) }}
-                    style={{ fontSize: 12, fontWeight: 600, flex: 1, padding: '1px 6px', height: 24 }}
-                  />
-                ) : (
-                  <span
-                    style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', flex: 1, cursor: isOwner ? 'text' : 'default' }}
-                    onClick={() => isOwner && setRenaming({ type: 'encounter', id: enc.id, name: enc.name })}
-                    title={isOwner ? 'Click to rename' : undefined}
-                  >{enc.name}</span>
-                )}
+                <div style={{ flex: '1 1 220px', minWidth: 0 }}>
+                  {renaming?.type === 'encounter' && renaming.id === enc.id ? (
+                    <input autoFocus value={renaming.name}
+                      onChange={e => setRenaming(r => ({ ...r, name: e.target.value }))}
+                      onBlur={handleRenameCommit}
+                      onKeyDown={e => { if (e.key === 'Enter') handleRenameCommit(); if (e.key === 'Escape') setRenaming(null) }}
+                      style={{ fontSize: 12, fontWeight: 600, width: '100%', minWidth: 0, padding: '1px 6px', height: 24 }}
+                    />
+                  ) : (
+                    <span
+                      style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', minWidth: 0, cursor: isOwner ? 'text' : 'default' }}
+                      className="truncate"
+                      onClick={() => isOwner && setRenaming({ type: 'encounter', id: enc.id, name: enc.name })}
+                      title={isOwner ? 'Click to rename' : undefined}
+                    >{enc.name}</span>
+                  )}
+                </div>
                 {isOwner && (
-                  <>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end', marginLeft: 'auto', maxWidth: '100%' }}>
                     <button className="btn btn-ghost btn-sm" style={{ fontSize: 11, padding: '2px 8px', height: 22, flexShrink: 0 }}
                       onClick={() => { setNewFileName(''); setAddFileEncounterId(enc.id); setShowAddFile(true) }}
                       title="Add media file slot to this encounter">
@@ -1201,66 +1166,90 @@ function MediaFilesSection({ encounters, mediaTypes, locked, projectId, onReload
                       style={{ color: 'var(--danger)', opacity: 0.6, flexShrink: 0 }}>
                       <TrashIcon />
                     </button>
-                  </>
+                  </div>
                 )}
               </div>
 
               {(enc.media || []).length === 0 ? (
                 <div style={{ padding: '12px 14px', fontSize: 13, color: 'var(--text-muted)' }}>No media files</div>
               ) : enc.media.map(m => (
-                <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderBottom: '1px solid var(--border)', background: selFiles.has(m.id) ? 'var(--bg-secondary)' : undefined }}>
+                <div
+                  key={m.id}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    flexWrap: 'wrap',
+                    gap: 12,
+                    padding: '10px 14px',
+                    borderBottom: '1px solid var(--border)',
+                    background: selFiles.has(m.id) ? 'var(--bg-secondary)' : undefined,
+                    minWidth: 0,
+                  }}
+                >
                   {isOwner && (
                     <input type="checkbox" checked={selFiles.has(m.id)} onChange={() => toggleFile(m.id)}
-                      title="Select file for bulk actions" style={{ flexShrink: 0, cursor: 'pointer', margin: 0 }} />
+                      title="Select file for bulk actions" style={{ width: 16, height: 16, cursor: 'pointer', margin: 0 }} />
                   )}
-                  {renaming?.type === 'file' && renaming.id === m.id ? (
-                    <input autoFocus value={renaming.name}
-                      onChange={e => setRenaming(r => ({ ...r, name: e.target.value }))}
-                      onBlur={handleRenameCommit}
-                      onKeyDown={e => { if (e.key === 'Enter') handleRenameCommit(); if (e.key === 'Escape') setRenaming(null) }}
-                      style={{ fontSize: 13, fontWeight: 500, flex: 1, padding: '1px 6px', height: 26 }}
-                    />
-                  ) : (
-                    <span
-                      style={{ fontSize: 13, fontWeight: 500, flex: 1, minWidth: 0, cursor: isOwner ? 'text' : 'default' }}
-                      className="truncate"
-                      onClick={() => isOwner && setRenaming({ type: 'file', id: m.id, name: m.name })}
-                      title={isOwner ? 'Click to rename' : m.name}
-                    >{m.name}</span>
-                  )}
+                  <div style={{ flex: '1 1 220px', minWidth: 0 }}>
+                    {renaming?.type === 'file' && renaming.id === m.id ? (
+                      <input autoFocus value={renaming.name}
+                        onChange={e => setRenaming(r => ({ ...r, name: e.target.value }))}
+                        onBlur={handleRenameCommit}
+                        onKeyDown={e => { if (e.key === 'Enter') handleRenameCommit(); if (e.key === 'Escape') setRenaming(null) }}
+                        style={{ fontSize: 13, fontWeight: 500, width: '100%', minWidth: 0, padding: '1px 6px', height: 26 }}
+                      />
+                    ) : (
+                      <span
+                        style={{ display: 'block', fontSize: 13, fontWeight: 500, minWidth: 0, cursor: isOwner ? 'text' : 'default' }}
+                        className="truncate"
+                        onClick={() => isOwner && setRenaming({ type: 'file', id: m.id, name: m.name })}
+                        title={isOwner ? 'Click to rename' : m.name}
+                      >{m.name}</span>
+                    )}
+                  </div>
 
-                  {isOwner && encounters.length > 1 && (
-                    <select
-                      value={enc.id}
-                      onChange={e => handleMove(m.id, e.target.value)}
-                      title="Move to encounter"
-                      style={{ fontSize: 11, padding: '2px 4px', height: 26, maxWidth: 120, color: 'var(--text-muted)', flexShrink: 0 }}
-                    >
-                      {encounters.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
-                    </select>
-                  )}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', flexShrink: 0, marginLeft: 'auto', maxWidth: '100%' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'nowrap', minWidth: 0 }}>
+                      {isOwner && encounters.length > 1 && (
+                        <select
+                          value={enc.id}
+                          onChange={e => handleMove(m.id, e.target.value)}
+                          title="Move to encounter"
+                          style={{ fontSize: 11, padding: '2px 4px', height: 26, maxWidth: 150, color: 'var(--text-muted)', flexShrink: 1 }}
+                        >
+                          {encounters.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+                        </select>
+                      )}
 
-                  <select
-                    value={m.media_type_id || ''}
-                    disabled={locked}
-                    onChange={e => handleTypeChange(m, e.target.value)}
-                    style={{ fontSize: 12, padding: '3px 6px', height: 28, width: 140, opacity: locked ? 0.5 : 1, flexShrink: 0 }}
-                  >
-                    <option value="">No type</option>
-                    {mediaTypes.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                  </select>
+                      <select
+                        value={m.media_type_id || ''}
+                        disabled={locked}
+                        onChange={e => handleTypeChange(m, e.target.value)}
+                        style={{ fontSize: 12, padding: '3px 6px', height: 28, width: 160, opacity: locked ? 0.5 : 1, flexShrink: 0 }}
+                      >
+                        <option value="">No type</option>
+                        {mediaTypes.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                      </select>
+                    </div>
 
-                  {isOwner && (
-                    <button className="btn btn-ghost btn-icon btn-sm" title="Delete file"
-                      onClick={() => handleDeleteClick('file', m)}
-                      style={{ color: 'var(--danger)', opacity: 0.6, flexShrink: 0 }}>
-                      <TrashIcon />
-                    </button>
-                  )}
+                    {isOwner && (
+                      <button className="btn btn-ghost btn-icon btn-sm" title="Delete file"
+                        onClick={() => handleDeleteClick('file', m)}
+                        style={{ color: 'var(--danger)', opacity: 0.6, flexShrink: 0 }}>
+                        <TrashIcon />
+                      </button>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
           ))}
+        </div>
+      )}
+
+      {!isOwner && hasPassword && (
+        <div style={{ marginTop: 20, background: 'var(--bg-secondary)', border: '1px solid var(--border)', padding: '10px 14px', borderRadius: 8, fontSize: 13, color: 'var(--text-secondary)' }}>
+          Only the project owner can scan for new encounters. You can still assign media types here and use the Files tab to link your local copies.
         </div>
       )}
 
@@ -2177,4 +2166,71 @@ function statusColor(status) {
 
 function LinkStatusDot({ status }) {
   return <span style={{ width: 8, height: 8, borderRadius: '50%', background: statusColor(status), flexShrink: 0, display: 'inline-block' }} />
+}
+
+function ScanResultSummary({ scanResult }) {
+  if (!scanResult) return null
+
+  if (scanResult.error) {
+    return (
+      <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: '#b91c1c' }}>
+        {scanResult.error}
+      </div>
+    )
+  }
+
+  const {
+    encountersAdded = scanResult.createdEncounters || 0,
+    encountersLinked = 0,
+    filesAdded = scanResult.createdMediaFiles || 0,
+    filesLinked = 0,
+    directMediaFiles = 0,
+    totalSubfolders = 0,
+    stillUnlinked = 0,
+    stillBroken = 0,
+  } = scanResult
+
+  if (directMediaFiles > 0) {
+    return (
+      <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', color: '#92400e', padding: '12px 14px', borderRadius: 8, fontSize: 13, display: 'flex', gap: 10 }}>
+        <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 1 }} />
+        <div>
+          <strong>Wrong folder level detected.</strong> This folder contains media files directly. SDMo expects each encounter to be its own subfolder.
+          <pre style={{ margin: '6px 0 0', fontSize: 11, fontFamily: 'monospace', lineHeight: 1.6, background: 'rgba(0,0,0,0.05)', padding: '6px 8px', borderRadius: 4 }}>{`SelectedFolder/\n  Patient001/\n    consult.mp4\n  Patient002/\n    consult.mp4`}</pre>
+        </div>
+      </div>
+    )
+  }
+
+  if (totalSubfolders === 0) {
+    return (
+      <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', color: '#92400e', padding: '10px 14px', borderRadius: 8, fontSize: 13 }}>
+        <strong>No subfolders found.</strong> Each encounter should be a subfolder inside the selected folder.
+      </div>
+    )
+  }
+
+  const nothingNew = encountersAdded === 0 && encountersLinked === 0 && filesAdded === 0 && filesLinked === 0
+  const stillMissing = stillUnlinked + stillBroken
+  const parts = []
+  if (encountersAdded > 0) parts.push(`${encountersAdded} new encounter${encountersAdded !== 1 ? 's' : ''} added`)
+  if (encountersLinked > 0) parts.push(`${encountersLinked} encounter${encountersLinked !== 1 ? 's' : ''} linked`)
+  if (filesAdded > 0) parts.push(`${filesAdded} new file${filesAdded !== 1 ? 's' : ''} added`)
+  if (filesLinked > 0) parts.push(`${filesLinked} file${filesLinked !== 1 ? 's' : ''} relinked`)
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {(parts.length > 0 || nothingNew) && (
+        <div style={{ background: 'var(--success-light)', color: 'var(--success)', padding: '10px 14px', borderRadius: 8, fontSize: 13 }}>
+          {parts.length > 0 ? `✓ ${parts.join(', ')}.` : `✓ All ${totalSubfolders} folder${totalSubfolders !== 1 ? 's' : ''} up to date.`}
+        </div>
+      )}
+      {stillMissing > 0 && (
+        <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', color: '#92400e', padding: '10px 14px', borderRadius: 8, fontSize: 13, display: 'flex', gap: 8 }}>
+          <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+          <div><strong>{stillMissing} file{stillMissing !== 1 ? 's' : ''} not found in this folder.</strong> They may have been renamed or moved. Use "Link" in the file status list on the Files tab to manually locate them.</div>
+        </div>
+      )}
+    </div>
+  )
 }

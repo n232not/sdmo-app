@@ -19,17 +19,17 @@ function createProject(db, name = 'Project', extra = {}) {
 }
 
 function addForm(db, projectId, name, schema = { sections: [] }, opts = {}) {
-  return db.prepare('INSERT INTO forms (project_id, name, schema, sync_id) VALUES (?,?,?,?)')
+  return db.prepare("INSERT INTO forms (project_id, name, schema, sync_id, updated_at) VALUES (?,?,?,?,datetime('now'))")
     .run(projectId, name, JSON.stringify(schema), opts.sync_id || crypto.randomUUID()).lastInsertRowid
 }
 
 function addInstruction(db, projectId, name, opts = {}) {
-  return db.prepare("INSERT INTO instructions (project_id, name, content, content_type, sync_id) VALUES (?,?,?,?,?)")
+  return db.prepare("INSERT INTO instructions (project_id, name, content, content_type, sync_id, updated_at) VALUES (?,?,?,?,?,datetime('now'))")
     .run(projectId, name, opts.content || '', opts.content_type || 'markdown', opts.sync_id || crypto.randomUUID()).lastInsertRowid
 }
 
 function addMediaType(db, projectId, name, opts = {}) {
-  const id = db.prepare('INSERT INTO media_types (project_id, name, reviews_required, allow_custom_tags, color, sync_id) VALUES (?,?,?,?,?,?)')
+  const id = db.prepare("INSERT INTO media_types (project_id, name, reviews_required, allow_custom_tags, color, sync_id, updated_at) VALUES (?,?,?,?,?,?,datetime('now'))")
     .run(projectId, name, opts.reviews_required ?? 1, opts.allow_custom_tags ? 1 : 0, opts.color || '#6366f1', opts.sync_id || crypto.randomUUID()).lastInsertRowid
   for (const t of (opts.tags || [])) {
     db.prepare('INSERT INTO timestamp_tags (media_type_id, label, color, description) VALUES (?,?,?,?)')
@@ -44,14 +44,14 @@ function addWorkspaceTab(db, mediaTypeId, { tab_type, ref_id, label, sort_order 
 }
 
 function addEncounter(db, projectId, name, syncId = crypto.randomUUID()) {
-  const id = db.prepare('INSERT INTO encounters (project_id, name, folder_path, sync_id) VALUES (?,?,?,?)')
+  const id = db.prepare("INSERT INTO encounters (project_id, name, folder_path, sync_id, updated_at) VALUES (?,?,?,?,datetime('now'))")
     .run(projectId, name, '', syncId).lastInsertRowid
   return { id, sync_id: syncId }
 }
 
 function addMedia(db, encounterId, name, opts = {}) {
   const syncId = opts.sync_id || crypto.randomUUID()
-  const id = db.prepare('INSERT INTO media_files (encounter_id, name, file_path, file_type, media_type_id, sync_id) VALUES (?,?,?,?,?,?)')
+  const id = db.prepare("INSERT INTO media_files (encounter_id, name, file_path, file_type, media_type_id, sync_id, updated_at) VALUES (?,?,?,?,?,?,datetime('now'))")
     .run(encounterId, name, '', opts.file_type || 'video', opts.media_type_id || null, syncId).lastInsertRowid
   return { id, sync_id: syncId }
 }

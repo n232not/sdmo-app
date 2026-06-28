@@ -5,6 +5,9 @@ const crypto = require('crypto')
 const { getDb, backupDb } = require('./db')
 const { getSettings, getProjectName, getOrCreateUUID } = require('./settings')
 
+const SYNC_PROTOCOL_VERSION = 2
+const PROJECT_STATE_FILENAME = 'project-state.json'
+
 // Bump when the split-config file format changes in a backward-incompatible way.
 // buildConfigExport stamps this; readers refuse configs newer than they understand.
 // v5: every structural entity carries a stable sync_id + an updated_at clock so
@@ -747,14 +750,318 @@ function structureFingerprint(db, projectId) {
 function buildManifest(db, projectId, fingerprint) {
   const project = db.prepare('SELECT config_version FROM projects WHERE id=?').get(projectId)
   return {
+    protocol_version: SYNC_PROTOCOL_VERSION,
     config_version: project?.config_version || 1,
-    fingerprint: fingerprint || structureFingerprint(db, projectId),
+    fingerprint: fingerprint || projectStateFingerprint(db, projectId),
     updated_at: new Date().toISOString(),
   }
 }
 
 function readLocalManifest(syncFolder) {
   try { return JSON.parse(fs.readFileSync(path.join(syncFolder, 'manifest.json'), 'utf8')) } catch { return null }
+}
+
+function isProtocolV2Manifest(manifest) {
+  return (manifest?.protocol_version || 1) >= SYNC_PROTOCOL_VERSION
+}
+
+function normalizeClockValue(value) {
+  if (!value) return null
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)) return `${value.replace(' ', 'T')}Z`
+  return value
+}
+
+function maxClock(...values) {
+  return values
+    .map(normalizeClockValue)
+    .filter(Boolean)
+    .sort()
+    .pop() || null
+}
+
+function buildReviewStateExport(db, projectId) {
+  return db.prepare(`
+      SELECT r.*, mf.sync_id as media_sync_id, mf.name as media_name, e.sync_id as encounter_sync_id, e.name as encounter_name
+      FROM reviews r
+      JOIN media_files mf ON r.media_file_id = mf.id
+      JOIN encounters e ON mf.encounter_id = e.id
+      WHERE e.project_id=?
+      ORDER BY r.created_at, r.id
+    `).all(projectId).map(rev => {
+    const timestamps = db.prepare('SELECT * FROM timestamps WHERE review_id=? ORDER BY time_seconds, created_at, id').all(rev.id)
+      .map(ts => ({
+        time_seconds: ts.time_seconds,
+        tag_label: ts.tag_label || null,
+        tag_color: ts.tag_color || null,
+        notes: ts.notes || '',
+        created_at: ts.created_at,
+      }))
+    const formResponses = db.prepare(`
+        SELECT fr.responses, fr.updated_at, f.name as form_name
+        FROM form_responses fr
+        JOIN forms f ON fr.form_id = f.id
+        WHERE fr.review_id=?
+        ORDER BY f.name
+      `).all(rev.id).map(fr => ({
+      form_name: fr.form_name,
+      responses: fr.responses,
+      updated_at: fr.updated_at,
+    }))
+    return {
+      review_sync_id: rev.review_sync_id || null,
+      media_sync_id: rev.media_sync_id || null,
+      media_name: rev.media_name,
+      encounter_sync_id: rev.encounter_sync_id || null,
+      encounter_name: rev.encounter_name,
+      reviewer_name: rev.reviewer_name,
+      reviewer_uuid: rev.reviewer_uuid || null,
+      status: rev.status,
+      notes: rev.notes || '',
+      created_at: rev.created_at,
+      submitted_at: rev.submitted_at || null,
+      deleted_at: rev.deleted_at || null,
+      restored_at: rev.restored_at || null,
+      updated_at: maxClock(
+        rev.created_at,
+        rev.submitted_at,
+        rev.deleted_at,
+        rev.restored_at,
+        ...timestamps.map(ts => ts.created_at),
+        ...formResponses.map(fr => fr.updated_at)
+      ),
+      timestamps,
+      form_responses: formResponses,
+    }
+  })
+}
+
+function buildProjectStateExport(db, projectId) {
+  const config = buildConfigExport(db, projectId)
+  return {
+    sdmo_sync: true,
+    protocol_version: SYNC_PROTOCOL_VERSION,
+    version: 1,
+    config_version: config.config_version || 1,
+    exported_at: new Date().toISOString(),
+    project: config.project,
+    forms: config.forms || [],
+    instructions: config.instructions || [],
+    media_types: config.media_types || [],
+    encounters: config.encounters || [],
+    reviews: buildReviewStateExport(db, projectId),
+    deleted_structure: buildStructureTombstones(db, projectId),
+  }
+}
+
+function canonicalizeProjectState(state) {
+  const sortBy = (arr, key) => [...(arr || [])].sort((a, b) => {
+    const av = a?.[key] || a?.name || ''
+    const bv = b?.[key] || b?.name || ''
+    return av > bv ? 1 : av < bv ? -1 : 0
+  })
+  const stripClock = ({ updated_at, exported_at, ...rest }) => rest
+  return {
+    project: state.project ? {
+      name: state.project.name || '',
+      description: state.project.description || '',
+      owner_password_hash: state.project.owner_password_hash || null,
+      keybinds: state.project.keybinds || [],
+    } : null,
+    forms: sortBy(state.forms, 'sync_id').map(stripClock),
+    instructions: sortBy(state.instructions, 'sync_id').map(stripClock),
+    media_types: sortBy(state.media_types, 'sync_id').map(mt => ({
+      ...stripClock(mt),
+      tags: [...(mt.tags || [])].sort((a, b) => (a.label || '') > (b.label || '') ? 1 : -1),
+      workspace_tabs: [...(mt.workspace_tabs || [])].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)),
+    })),
+    encounters: sortBy(state.encounters, 'sync_id').map(enc => ({
+      sync_id: enc.sync_id,
+      name: enc.name,
+      media: sortBy(enc.media, 'sync_id').map(stripClock),
+    })),
+    reviews: sortBy(state.reviews, 'review_sync_id').map(rev => ({
+      review_sync_id: rev.review_sync_id,
+      media_sync_id: rev.media_sync_id || null,
+      media_name: rev.media_name,
+      encounter_sync_id: rev.encounter_sync_id || null,
+      encounter_name: rev.encounter_name,
+      reviewer_name: rev.reviewer_name,
+      reviewer_uuid: rev.reviewer_uuid || null,
+      status: rev.status,
+      notes: rev.notes || '',
+      created_at: rev.created_at,
+      submitted_at: rev.submitted_at || null,
+      deleted_at: rev.deleted_at || null,
+      restored_at: rev.restored_at || null,
+      timestamps: [...(rev.timestamps || [])].sort((a, b) => {
+        if (a.time_seconds !== b.time_seconds) return a.time_seconds - b.time_seconds
+        return (a.created_at || '') > (b.created_at || '') ? 1 : -1
+      }),
+      form_responses: [...(rev.form_responses || [])].sort((a, b) => (a.form_name || '') > (b.form_name || '') ? 1 : -1).map(fr => ({
+        form_name: fr.form_name,
+        responses: fr.responses,
+      })),
+    })),
+    deleted_structure: [...(state.deleted_structure || [])]
+      .map(t => ({ kind: t.kind, sync_id: t.sync_id }))
+      .sort((a, b) => `${a.kind}:${a.sync_id}` > `${b.kind}:${b.sync_id}` ? 1 : -1),
+  }
+}
+
+function projectStateFingerprint(db, projectId) {
+  return hashOf(canonicalizeProjectState(buildProjectStateExport(db, projectId)))
+}
+
+function buildReviewHash(review) {
+  return hashOf({
+    review_sync_id: review.review_sync_id,
+    media_sync_id: review.media_sync_id || null,
+    reviewer_name: review.reviewer_name,
+    reviewer_uuid: review.reviewer_uuid || null,
+    status: review.status,
+    notes: review.notes || '',
+    created_at: review.created_at,
+    submitted_at: review.submitted_at || null,
+    deleted_at: review.deleted_at || null,
+    restored_at: review.restored_at || null,
+    timestamps: review.timestamps || [],
+    form_responses: (review.form_responses || []).map(fr => ({ form_name: fr.form_name, responses: fr.responses })),
+  })
+}
+
+function applyReviewState(db, projectId, review, { merge = false } = {}) {
+  let localMedia = review.media_sync_id
+    ? db.prepare('SELECT id FROM media_files WHERE sync_id=?').get(review.media_sync_id)
+    : null
+  if (!localMedia && review.encounter_sync_id) {
+    const localEnc = db.prepare('SELECT id FROM encounters WHERE project_id=? AND sync_id=?').get(projectId, review.encounter_sync_id)
+    if (localEnc) {
+      localMedia = db.prepare('SELECT id FROM media_files WHERE encounter_id=? AND name=?').get(localEnc.id, review.media_name)
+    }
+  }
+  if (!localMedia) {
+    const localEnc = db.prepare('SELECT id FROM encounters WHERE project_id=? AND name=?').get(projectId, review.encounter_name)
+    if (localEnc) localMedia = db.prepare('SELECT id FROM media_files WHERE encounter_id=? AND name=?').get(localEnc.id, review.media_name)
+  }
+  if (!localMedia) return { conflict: null }
+
+  let local = review.review_sync_id
+    ? db.prepare('SELECT * FROM reviews WHERE review_sync_id=?').get(review.review_sync_id)
+    : null
+  if (!local) {
+    local = db.prepare('SELECT * FROM reviews WHERE media_file_id=? AND reviewer_name=? AND created_at=?').get(localMedia.id, review.reviewer_name, review.created_at)
+  }
+
+  const incomingClock = normalizeClockValue(review.updated_at || review.created_at) || ''
+  if (local) {
+    const localState = buildReviewStateExport(db, projectId).find(r => r.review_sync_id === local.review_sync_id || (!r.review_sync_id && r.reviewer_name === local.reviewer_name && r.created_at === local.created_at && r.media_sync_id === review.media_sync_id))
+    let write = true
+    let conflict = null
+    if (merge && localState) {
+      const d = decideWrite(
+        buildReviewHash(localState),
+        buildReviewHash(review),
+        normalizeClockValue(localState.updated_at || localState.created_at) || '',
+        incomingClock
+      )
+      write = d.write
+      if (d.conflict) conflict = { kind: 'review', name: `${review.reviewer_name} / ${review.media_name}` }
+    }
+    if (!write) return { conflict }
+
+    db.prepare(`
+      UPDATE reviews
+      SET media_file_id=?, reviewer_name=?, reviewer_uuid=?, review_sync_id=COALESCE(review_sync_id, ?),
+          status=?, notes=?, created_at=?, submitted_at=?, deleted_at=?, restored_at=?
+      WHERE id=?
+    `).run(
+      localMedia.id, review.reviewer_name, review.reviewer_uuid || null, review.review_sync_id || null,
+      review.status, review.notes || '', review.created_at, review.submitted_at || null,
+      review.deleted_at || null, review.restored_at || null, local.id
+    )
+    db.prepare('DELETE FROM timestamps WHERE review_id=?').run(local.id)
+    db.prepare('DELETE FROM form_responses WHERE review_id=?').run(local.id)
+    for (const ts of (review.timestamps || [])) {
+      const tag = ts.tag_label
+        ? db.prepare(`
+            SELECT tt.id
+            FROM timestamp_tags tt
+            JOIN media_files mf ON mf.media_type_id = tt.media_type_id
+            WHERE mf.id=? AND tt.label=?
+          `).get(localMedia.id, ts.tag_label)
+        : null
+      db.prepare('INSERT INTO timestamps (review_id, time_seconds, tag_id, tag_label, notes, tag_color, created_at) VALUES (?,?,?,?,?,?,?)')
+        .run(local.id, ts.time_seconds, tag?.id || null, ts.tag_label || null, ts.notes || '', ts.tag_color || null, ts.created_at)
+    }
+    for (const fr of (review.form_responses || [])) {
+      const form = fr.form_name ? db.prepare('SELECT id FROM forms WHERE project_id=? AND name=?').get(projectId, fr.form_name) : null
+      if (!form) continue
+      db.prepare('INSERT INTO form_responses (review_id, form_id, responses, updated_at) VALUES (?,?,?,COALESCE(?,datetime(\'now\')))')
+        .run(local.id, form.id, fr.responses, fr.updated_at || null)
+    }
+    return { conflict }
+  }
+
+  const r = db.prepare(`
+    INSERT INTO reviews (media_file_id, reviewer_name, reviewer_uuid, review_sync_id, status, notes, created_at, submitted_at, deleted_at, restored_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?)
+  `).run(
+    localMedia.id, review.reviewer_name, review.reviewer_uuid || null, review.review_sync_id || crypto.randomUUID(),
+    review.status, review.notes || '', review.created_at, review.submitted_at || null,
+    review.deleted_at || null, review.restored_at || null
+  )
+  for (const ts of (review.timestamps || [])) {
+    const tag = ts.tag_label
+      ? db.prepare(`
+          SELECT tt.id
+          FROM timestamp_tags tt
+          JOIN media_files mf ON mf.media_type_id = tt.media_type_id
+          WHERE mf.id=? AND tt.label=?
+        `).get(localMedia.id, ts.tag_label)
+      : null
+    db.prepare('INSERT INTO timestamps (review_id, time_seconds, tag_id, tag_label, notes, tag_color, created_at) VALUES (?,?,?,?,?,?,?)')
+      .run(r.lastInsertRowid, ts.time_seconds, tag?.id || null, ts.tag_label || null, ts.notes || '', ts.tag_color || null, ts.created_at)
+  }
+  for (const fr of (review.form_responses || [])) {
+    const form = fr.form_name ? db.prepare('SELECT id FROM forms WHERE project_id=? AND name=?').get(projectId, fr.form_name) : null
+    if (!form) continue
+    db.prepare('INSERT INTO form_responses (review_id, form_id, responses, updated_at) VALUES (?,?,?,COALESCE(?,datetime(\'now\')))')
+      .run(r.lastInsertRowid, form.id, fr.responses, fr.updated_at || null)
+  }
+  return { conflict: null }
+}
+
+function assertProjectStateCompatible(stateData) {
+  if (!stateData?.sdmo_sync) throw new Error('Not a valid SDMo sync state file')
+  const proto = stateData.protocol_version || 1
+  if (proto > SYNC_PROTOCOL_VERSION) {
+    throw new Error(`This project uses sync protocol v${proto}, but this app supports v${SYNC_PROTOCOL_VERSION}. Please update the app.`)
+  }
+}
+
+function mergeProjectStateImport(db, projectId, stateData, { merge = true } = {}) {
+  assertProjectStateCompatible(stateData)
+  const tx = db.transaction(() => {
+    applyStructureTombstones(db, projectId, mergeStructureTombstones(stateData.deleted_structure || [], buildStructureTombstones(db, projectId)))
+    applyStructure(db, projectId, {
+      sdmo: true,
+      version: CONFIG_FORMAT_VERSION,
+      config_version: stateData.config_version || 1,
+      exported_at: stateData.exported_at,
+      project: stateData.project,
+      forms: stateData.forms || [],
+      instructions: stateData.instructions || [],
+      media_types: stateData.media_types || [],
+      encounters: stateData.encounters || [],
+    }, { merge })
+    const conflicts = []
+    for (const review of (stateData.reviews || [])) {
+      const result = applyReviewState(db, projectId, review, { merge })
+      if (result.conflict) conflicts.push(result.conflict)
+    }
+    return conflicts
+  })
+  return { conflicts: tx() || [] }
 }
 
 // ─── Structure apply entry points ─────────────────────────────────────────────
@@ -844,6 +1151,126 @@ async function syncConfigCloud(db, projectId, adapter, folderId, allFiles) {
   return { conflicts }
 }
 
+function migrateLegacyLocalFolderIntoDb(db, projectId, syncFolder) {
+  const configPath = path.join(syncFolder, 'project-config.json')
+  if (!fs.existsSync(configPath)) return false
+
+  const tombstonePath = path.join(syncFolder, 'deleted-reviews.json')
+  const fileTombstones = readTombstoneFile(tombstonePath)
+  applyTombstones(db, projectId, fileTombstones)
+
+  const structTombPath = path.join(syncFolder, 'deleted-structure.json')
+  const fileStructTombs = readStructureTombstoneFile(structTombPath)
+  applyStructureTombstones(db, projectId, fileStructTombs)
+
+  const configData = JSON.parse(fs.readFileSync(configPath, 'utf8'))
+  if (configData?.sdmo) mergeStructureFromConfig(db, projectId, configData)
+
+  const reviewsDir = path.join(syncFolder, 'reviews')
+  if (fs.existsSync(reviewsDir)) {
+    for (const file of fs.readdirSync(reviewsDir).filter(f => f.endsWith('.json'))) {
+      try {
+        const reviewData = JSON.parse(fs.readFileSync(path.join(reviewsDir, file), 'utf8'))
+        mergeReviewFile(db, projectId, reviewData, null)
+      } catch (e) {
+        console.error(`[sync] failed to migrate legacy review file ${file}:`, e.message)
+      }
+    }
+  }
+  return true
+}
+
+async function migrateLegacyCloudFolderIntoDb(db, projectId, adapter, folderId, allFiles) {
+  const configFile = allFiles.find(f => f.name === 'project-config.json')
+  if (!configFile) return false
+
+  const tombstoneFile = allFiles.find(f => f.name === 'deleted-reviews.json')
+  if (tombstoneFile) {
+    try {
+      const data = JSON.parse(await adapter.readFile(tombstoneFile.id))
+      applyTombstones(db, projectId, Array.isArray(data.tombstones) ? data.tombstones : [])
+    } catch {}
+  }
+
+  const structTombFile = allFiles.find(f => f.name === 'deleted-structure.json')
+  if (structTombFile) {
+    try {
+      const data = JSON.parse(await adapter.readFile(structTombFile.id))
+      applyStructureTombstones(db, projectId, Array.isArray(data.tombstones) ? data.tombstones : [])
+    } catch {}
+  }
+
+  const configData = JSON.parse(await adapter.readFile(configFile.id))
+  if (configData?.sdmo) mergeStructureFromConfig(db, projectId, configData)
+
+  const reviewsFolder = allFiles.find(f => f.name === 'reviews' && f.isFolder)
+  if (reviewsFolder) {
+    const reviewFiles = await adapter.listFiles(reviewsFolder.id)
+    for (const file of reviewFiles) {
+      if (!file.name.endsWith('.json')) continue
+      try {
+        const reviewData = JSON.parse(await adapter.readFile(file.id))
+        mergeReviewFile(db, projectId, reviewData, null)
+      } catch (e) {
+        console.error(`[sync] failed to migrate cloud review file ${file.name}:`, e.message)
+      }
+    }
+  }
+  return true
+}
+
+function syncProjectStateLocal(db, projectId, syncFolder) {
+  const manifest = readLocalManifest(syncFolder)
+  const folderFingerprint = manifest?.fingerprint || null
+  const localFingerprint = projectStateFingerprint(db, projectId)
+  if (folderFingerprint && folderFingerprint === localFingerprint) return { conflicts: [] }
+
+  const statePath = path.join(syncFolder, PROJECT_STATE_FILENAME)
+  let conflicts = []
+
+  if (fs.existsSync(statePath)) {
+    const stateData = JSON.parse(fs.readFileSync(statePath, 'utf8'))
+    conflicts = mergeProjectStateImport(db, projectId, stateData, { merge: true }).conflicts
+  } else {
+    migrateLegacyLocalFolderIntoDb(db, projectId, syncFolder)
+  }
+
+  const postFingerprint = projectStateFingerprint(db, projectId)
+  if (postFingerprint !== folderFingerprint || !fs.existsSync(statePath) || !isProtocolV2Manifest(manifest)) {
+    fs.writeFileSync(statePath, JSON.stringify(buildProjectStateExport(db, projectId), null, 2))
+    fs.writeFileSync(path.join(syncFolder, 'manifest.json'), JSON.stringify(buildManifest(db, projectId, postFingerprint)))
+  }
+  return { conflicts }
+}
+
+async function syncProjectStateCloud(db, projectId, adapter, folderId, allFiles) {
+  const manifestFile = allFiles.find(f => f.name === 'manifest.json')
+  let manifest = null
+  if (manifestFile) {
+    try { manifest = JSON.parse(await adapter.readFile(manifestFile.id)) } catch {}
+  }
+  const cloudFingerprint = manifest?.fingerprint || null
+  const localFingerprint = projectStateFingerprint(db, projectId)
+  if (cloudFingerprint && cloudFingerprint === localFingerprint) return { conflicts: [] }
+
+  const stateFile = allFiles.find(f => f.name === PROJECT_STATE_FILENAME)
+  let conflicts = []
+
+  if (stateFile) {
+    const stateData = JSON.parse(await adapter.readFile(stateFile.id))
+    conflicts = mergeProjectStateImport(db, projectId, stateData, { merge: true }).conflicts
+  } else {
+    await migrateLegacyCloudFolderIntoDb(db, projectId, adapter, folderId, allFiles)
+  }
+
+  const postFingerprint = projectStateFingerprint(db, projectId)
+  if (postFingerprint !== cloudFingerprint || !stateFile || !isProtocolV2Manifest(manifest)) {
+    await adapter.writeFile(folderId, PROJECT_STATE_FILENAME, JSON.stringify(buildProjectStateExport(db, projectId), null, 2))
+    await adapter.writeFile(folderId, 'manifest.json', JSON.stringify(buildManifest(db, projectId, postFingerprint)))
+  }
+  return { conflicts }
+}
+
 // ─── Local folder sync ────────────────────────────────────────────────────────
 
 function doLocalSync(db, projectId, syncFolder, uuid, name) {
@@ -851,55 +1278,16 @@ function doLocalSync(db, projectId, syncFolder, uuid, name) {
 }
 
 async function _doLocalSync(db, projectId, syncFolder, uuid, name) {
-  fs.mkdirSync(path.join(syncFolder, 'reviews'), { recursive: true })
+  fs.mkdirSync(syncFolder, { recursive: true })
 
-  // 1. Tombstones
-  const tombstonePath = path.join(syncFolder, 'deleted-reviews.json')
-  const fileTombstones = readTombstoneFile(tombstonePath)
-  applyTombstones(db, projectId, fileTombstones)
-  const allTombstones = buildTombstones(db, projectId)
-  const mergedTombstones = [...fileTombstones]
-  for (const t of allTombstones) {
-    if (!mergedTombstones.find(x => x.encounter_name === t.encounter_name && x.media_name === t.media_name && x.reviewer_name === t.reviewer_name)) {
-      mergedTombstones.push(t)
-    }
-  }
-
-  // 1b. Structure tombstones — apply before config so deleted items aren't resurrected.
-  const structTombPath = path.join(syncFolder, 'deleted-structure.json')
-  const fileStructTombs = readStructureTombstoneFile(structTombPath)
-  applyStructureTombstones(db, projectId, fileStructTombs)
-  const mergedStructTombs = mergeStructureTombstones(fileStructTombs, buildStructureTombstones(db, projectId))
-
-  // 2. Config
   try {
-    const { conflicts } = syncConfigLocal(db, projectId, syncFolder)
+    const { conflicts } = syncProjectStateLocal(db, projectId, syncFolder)
     emitConflicts(conflicts)
   } catch (e) {
-    console.error('[sync] config sync failed:', e.message)
+    console.error('[sync] project state sync failed:', e.message)
   }
 
-  // 3. Peer reviews
-  const reviewsDir = path.join(syncFolder, 'reviews')
-  const reviewFiles = fs.readdirSync(reviewsDir).filter(f => f.endsWith('.json') && f !== `${uuid}.json`)
-  for (const file of reviewFiles) {
-    try {
-      const reviewData = JSON.parse(fs.readFileSync(path.join(reviewsDir, file), 'utf8'))
-      mergeReviewFile(db, projectId, reviewData, uuid)
-    } catch (e) {
-      console.error(`[sync] failed to merge review file ${file}:`, e.message)
-    }
-  }
-
-  // 4. Write own review file
-  const ownReviews = buildReviewExport(db, projectId, uuid, name)
-  fs.writeFileSync(path.join(reviewsDir, `${uuid}.json`), JSON.stringify(ownReviews, null, 2))
-
-  // 5. Write merged tombstones
-  fs.writeFileSync(tombstonePath, JSON.stringify({ tombstones: mergedTombstones }, null, 2))
-  fs.writeFileSync(structTombPath, JSON.stringify({ tombstones: mergedStructTombs }, null, 2))
-
-  // 6. Write the auto-updated reviews report (.xlsx of all merged reviews)
+  // Write the auto-updated reviews report (.xlsx of all merged reviews)
   try {
     const wb = buildReviewsWorkbook(db, projectId)
     if (wb) require('xlsx').writeFile(wb, path.join(syncFolder, REVIEWS_REPORT_FILENAME))
@@ -920,71 +1308,16 @@ async function _doCloudSync(db, projectId, provider, folderId, uuid, name) {
   const { getAdapter } = require('./cloud/cloudSync')
   const adapter = getAdapter(provider)
 
-  // Ensure reviews subfolder exists; list root folder files once for all lookups
-  const [reviewsFolderId, allFiles] = await Promise.all([
-    adapter.ensureFolder(folderId, 'reviews'),
-    adapter.listFiles(folderId),
-  ])
+  const allFiles = await adapter.listFiles(folderId)
 
-  // 1. Tombstones
-  const tombstoneFile = allFiles.find(f => f.name === 'deleted-reviews.json')
-  let fileTombstones = []
-  if (tombstoneFile) {
-    try {
-      const data = JSON.parse(await adapter.readFile(tombstoneFile.id))
-      fileTombstones = Array.isArray(data.tombstones) ? data.tombstones : []
-    } catch {}
-  }
-  applyTombstones(db, projectId, fileTombstones)
-  const allTombstones = buildTombstones(db, projectId)
-  const mergedTombstones = [...fileTombstones]
-  for (const t of allTombstones) {
-    if (!mergedTombstones.find(x => x.encounter_name === t.encounter_name && x.media_name === t.media_name && x.reviewer_name === t.reviewer_name)) {
-      mergedTombstones.push(t)
-    }
-  }
-
-  // 1b. Structure tombstones — apply before config so deleted items aren't resurrected.
-  const structTombFile = allFiles.find(f => f.name === 'deleted-structure.json')
-  let fileStructTombs = []
-  if (structTombFile) {
-    try {
-      const data = JSON.parse(await adapter.readFile(structTombFile.id))
-      fileStructTombs = Array.isArray(data.tombstones) ? data.tombstones : []
-    } catch {}
-  }
-  applyStructureTombstones(db, projectId, fileStructTombs)
-  const mergedStructTombs = mergeStructureTombstones(fileStructTombs, buildStructureTombstones(db, projectId))
-
-  // 2. Config
   try {
-    const { conflicts } = await syncConfigCloud(db, projectId, adapter, folderId, allFiles)
+    const { conflicts } = await syncProjectStateCloud(db, projectId, adapter, folderId, allFiles)
     emitConflicts(conflicts)
   } catch (e) {
-    console.error('[sync] cloud config sync failed:', e.message)
+    console.error('[sync] cloud project state sync failed:', e.message)
   }
 
-  // 3. Peer reviews
-  const reviewFileList = await adapter.listFiles(reviewsFolderId)
-  for (const file of reviewFileList) {
-    if (!file.name.endsWith('.json') || file.name === `${uuid}.json`) continue
-    try {
-      const reviewData = JSON.parse(await adapter.readFile(file.id))
-      mergeReviewFile(db, projectId, reviewData, uuid)
-    } catch (e) {
-      console.error(`[sync] failed to merge cloud review file ${file.name}:`, e.message)
-    }
-  }
-
-  // 4. Write own review file
-  const ownReviews = buildReviewExport(db, projectId, uuid, name)
-  await adapter.writeFile(reviewsFolderId, `${uuid}.json`, JSON.stringify(ownReviews, null, 2))
-
-  // 5. Write tombstones
-  await adapter.writeFile(folderId, 'deleted-reviews.json', JSON.stringify({ tombstones: mergedTombstones }, null, 2))
-  await adapter.writeFile(folderId, 'deleted-structure.json', JSON.stringify({ tombstones: mergedStructTombs }, null, 2))
-
-  // 6. Write the auto-updated reviews report (.xlsx of all merged reviews)
+  // Write the auto-updated reviews report (.xlsx of all merged reviews)
   try {
     const wb = buildReviewsWorkbook(db, projectId)
     if (wb) {
@@ -1215,9 +1548,11 @@ function mergeImport(db, projectId, data) {
       const schema = typeof f.schema === 'string' ? f.schema : JSON.stringify(f.schema)
       const existing = db.prepare('SELECT id FROM forms WHERE project_id=? AND name=?').get(projectId, f.name)
       if (existing) {
-        db.prepare("UPDATE forms SET schema=?, updated_at=datetime('now') WHERE id=?").run(schema, existing.id)
+        db.prepare("UPDATE forms SET schema=?, sync_id=COALESCE(?,sync_id), updated_at=COALESCE(?,datetime('now')) WHERE id=?")
+          .run(schema, f.sync_id || null, f.updated_at || null, existing.id)
       } else {
-        db.prepare('INSERT INTO forms (project_id, name, schema) VALUES (?,?,?)').run(projectId, f.name, schema)
+        db.prepare("INSERT INTO forms (project_id, name, schema, sync_id, updated_at) VALUES (?,?,?,?,COALESCE(?,datetime('now')))")
+          .run(projectId, f.name, schema, f.sync_id || crypto.randomUUID(), f.updated_at || null)
         formsAdded++
       }
     }
@@ -1233,11 +1568,11 @@ function mergeImport(db, projectId, data) {
       }
       const existing = db.prepare('SELECT id FROM instructions WHERE project_id=? AND name=?').get(projectId, i.name)
       if (existing) {
-        db.prepare('UPDATE instructions SET content=?, content_type=?, file_path=? WHERE id=?')
-          .run(i.content || '', i.content_type || 'markdown', filePath, existing.id)
+        db.prepare("UPDATE instructions SET content=?, content_type=?, file_path=?, sync_id=COALESCE(?,sync_id), updated_at=COALESCE(?,datetime('now')) WHERE id=?")
+          .run(i.content || '', i.content_type || 'markdown', filePath, i.sync_id || null, i.updated_at || null, existing.id)
       } else {
-        db.prepare('INSERT INTO instructions (project_id, name, content, content_type, file_path) VALUES (?,?,?,?,?)')
-          .run(projectId, i.name, i.content || '', i.content_type || 'markdown', filePath)
+        db.prepare("INSERT INTO instructions (project_id, name, content, content_type, file_path, sync_id, updated_at) VALUES (?,?,?,?,?,?,COALESCE(?,datetime('now')))")
+          .run(projectId, i.name, i.content || '', i.content_type || 'markdown', filePath, i.sync_id || crypto.randomUUID(), i.updated_at || null)
         instrAdded++
       }
     }
@@ -1246,12 +1581,12 @@ function mergeImport(db, projectId, data) {
       let mtId
       const existing = db.prepare('SELECT id FROM media_types WHERE project_id=? AND name=?').get(projectId, mt.name)
       if (existing) {
-        db.prepare('UPDATE media_types SET reviews_required=?, allow_custom_tags=?, color=? WHERE id=?')
-          .run(mt.reviews_required, mt.allow_custom_tags ? 1 : 0, mt.color, existing.id)
+        db.prepare("UPDATE media_types SET reviews_required=?, allow_custom_tags=?, color=?, sync_id=COALESCE(?,sync_id), updated_at=COALESCE(?,datetime('now')) WHERE id=?")
+          .run(mt.reviews_required, mt.allow_custom_tags ? 1 : 0, mt.color, mt.sync_id || null, mt.updated_at || null, existing.id)
         mtId = existing.id
       } else {
-        const r = db.prepare('INSERT INTO media_types (project_id, name, reviews_required, allow_custom_tags, color) VALUES (?,?,?,?,?)')
-          .run(projectId, mt.name, mt.reviews_required || 1, mt.allow_custom_tags ? 1 : 0, mt.color || '#6366f1')
+        const r = db.prepare("INSERT INTO media_types (project_id, name, reviews_required, allow_custom_tags, color, sync_id, updated_at) VALUES (?,?,?,?,?,?,COALESCE(?,datetime('now')))")
+          .run(projectId, mt.name, mt.reviews_required || 1, mt.allow_custom_tags ? 1 : 0, mt.color || '#6366f1', mt.sync_id || crypto.randomUUID(), mt.updated_at || null)
         mtId = r.lastInsertRowid
         typesAdded++
       }
@@ -1288,11 +1623,11 @@ function mergeImport(db, projectId, data) {
         localEnc = db.prepare('SELECT id FROM encounters WHERE project_id=? AND name=?').get(projectId, enc.name)
       }
       if (localEnc) {
-        db.prepare('UPDATE encounters SET name=?, sync_id=COALESCE(?,sync_id) WHERE id=?')
-          .run(enc.name, enc.sync_id || null, localEnc.id)
+        db.prepare("UPDATE encounters SET name=?, sync_id=COALESCE(?,sync_id), updated_at=COALESCE(?,datetime('now')) WHERE id=?")
+          .run(enc.name, enc.sync_id || null, enc.updated_at || null, localEnc.id)
       } else {
-        const r = db.prepare("INSERT INTO encounters (project_id, name, folder_path, sync_id) VALUES (?,?,?,?)")
-          .run(projectId, enc.name, '', enc.sync_id || crypto.randomUUID())
+        const r = db.prepare("INSERT INTO encounters (project_id, name, folder_path, sync_id, updated_at) VALUES (?,?,?,?,COALESCE(?,datetime('now')))")
+          .run(projectId, enc.name, '', enc.sync_id || crypto.randomUUID(), enc.updated_at || null)
         localEnc = { id: r.lastInsertRowid }
       }
       for (const media of (enc.media || [])) {
@@ -1304,11 +1639,11 @@ function mergeImport(db, projectId, data) {
         }
         const mt = media.media_type_name ? db.prepare('SELECT id FROM media_types WHERE project_id=? AND name=?').get(projectId, media.media_type_name) : null
         if (!localMedia) {
-          const r = db.prepare("INSERT INTO media_files (encounter_id, name, file_path, file_type, media_type_id, sync_id) VALUES (?,?,?,?,?,?)").run(localEnc.id, media.name, '', media.file_type || 'video', mt?.id || null, media.sync_id || crypto.randomUUID())
+          const r = db.prepare("INSERT INTO media_files (encounter_id, name, file_path, file_type, media_type_id, sync_id, updated_at) VALUES (?,?,?,?,?,?,COALESCE(?,datetime('now')))").run(localEnc.id, media.name, '', media.file_type || 'video', mt?.id || null, media.sync_id || crypto.randomUUID(), media.updated_at || null)
           localMedia = { id: r.lastInsertRowid }
         } else {
-          db.prepare('UPDATE media_files SET encounter_id=?, name=?, media_type_id=?, sync_id=COALESCE(?,sync_id) WHERE id=?')
-            .run(localEnc.id, media.name, mt?.id || null, media.sync_id || null, localMedia.id)
+          db.prepare("UPDATE media_files SET encounter_id=?, name=?, media_type_id=?, sync_id=COALESCE(?,sync_id), updated_at=COALESCE(?,datetime('now')) WHERE id=?")
+            .run(localEnc.id, media.name, mt?.id || null, media.sync_id || null, media.updated_at || null, localMedia.id)
         }
         const mediaFile = db.prepare('SELECT media_type_id FROM media_files WHERE id=?').get(localMedia.id)
         const localTags = mediaFile?.media_type_id ? db.prepare('SELECT * FROM timestamp_tags WHERE media_type_id=?').all(mediaFile.media_type_id) : []
@@ -1376,9 +1711,12 @@ module.exports = {
   buildExport, mergeImport, createFromImport,
   buildReviewsWorkbook, REVIEWS_REPORT_FILENAME,
   buildConfigExport, buildReviewExport,
+  buildProjectStateExport, projectStateFingerprint,
   mergeConfigImport, mergeReviewFile,
+  mergeProjectStateImport, assertProjectStateCompatible,
   applyStructure, replaceStructureFromConfig, mergeStructureFromConfig,
   syncConfigLocal, syncConfigCloud,
+  syncProjectStateLocal, syncProjectStateCloud,
   structureFingerprint,
   buildManifest, readLocalManifest,
   doLocalSync, doCloudSync,
@@ -1387,4 +1725,5 @@ module.exports = {
   applyStructureTombstones, buildStructureTombstones,
   getLastSyncAt, markSynced, cancelSync,
   setMainWindow,
+  PROJECT_STATE_FILENAME, SYNC_PROTOCOL_VERSION,
 }

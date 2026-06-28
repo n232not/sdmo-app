@@ -35,7 +35,7 @@ module.exports = function (ipcMain) {
 
   ipcMain.handle('encounters:create', (_, projectId, name) => {
     const db = getDb()
-    const r = db.prepare('INSERT INTO encounters (project_id, name, folder_path, sync_id) VALUES (?,?,?,?)').run(projectId, name.trim(), '', crypto.randomUUID())
+    const r = db.prepare("INSERT INTO encounters (project_id, name, folder_path, sync_id, updated_at) VALUES (?,?,?,?,datetime('now'))").run(projectId, name.trim(), '', crypto.randomUUID())
     bumpAndSync(db, projectId)
     return { id: r.lastInsertRowid }
   })
@@ -88,11 +88,11 @@ module.exports = function (ipcMain) {
     db.transaction(() => {
       for (const name of names) {
         const enc = db.prepare(
-          'INSERT INTO encounters (project_id, name, folder_path, sync_id) VALUES (?,?,?,?)'
+          "INSERT INTO encounters (project_id, name, folder_path, sync_id, updated_at) VALUES (?,?,?,?,datetime('now'))"
         ).run(projectId, name.trim(), '', crypto.randomUUID())
         for (const slot of slots) {
           db.prepare(
-            'INSERT INTO media_files (encounter_id, name, file_path, file_type, media_type_id, sync_id) VALUES (?,?,?,?,?,?)'
+            "INSERT INTO media_files (encounter_id, name, file_path, file_type, media_type_id, sync_id, updated_at) VALUES (?,?,?,?,?,?,datetime('now'))"
           ).run(enc.lastInsertRowid, slot.name, '', 'other', slot.mediaTypeId || null, crypto.randomUUID())
         }
       }
@@ -203,18 +203,18 @@ module.exports = function (ipcMain) {
     db.transaction(() => {
       for (const { encName, files } of toCreate) {
         const enc = db.prepare(
-          'INSERT INTO encounters (project_id, name, folder_path, sync_id) VALUES (?,?,?,?)'
+          "INSERT INTO encounters (project_id, name, folder_path, sync_id, updated_at) VALUES (?,?,?,?,datetime('now'))"
         ).run(pid, encName, '', crypto.randomUUID())
         for (const f of files) {
           db.prepare(
-            'INSERT INTO media_files (encounter_id, name, file_path, file_type, media_type_id, sync_id) VALUES (?,?,?,?,?,?)'
+            "INSERT INTO media_files (encounter_id, name, file_path, file_type, media_type_id, sync_id, updated_at) VALUES (?,?,?,?,?,?,datetime('now'))"
           ).run(enc.lastInsertRowid, f.fileName, '', 'other', f.mediaTypeId || null, crypto.randomUUID())
         }
       }
       for (const { encId, files } of toAddFiles) {
         for (const f of files) {
           db.prepare(
-            'INSERT INTO media_files (encounter_id, name, file_path, file_type, media_type_id, sync_id) VALUES (?,?,?,?,?,?)'
+            "INSERT INTO media_files (encounter_id, name, file_path, file_type, media_type_id, sync_id, updated_at) VALUES (?,?,?,?,?,?,datetime('now'))"
           ).run(Number(encId), f.fileName, '', 'other', f.mediaTypeId || null, crypto.randomUUID())
         }
       }

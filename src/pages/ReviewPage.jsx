@@ -834,7 +834,7 @@ function WorkspaceTabContent({ tab, formSchema, instruction, responses, onSave, 
   }
   if (tab.tab_type === 'instruction') {
     if (instruction?.content_type === 'pdf' && instruction?.file_path) {
-      const pdfUrl = `localfile://${instruction.file_path}`
+      const pdfUrl = `localfile://${encodeURIComponent(instruction.file_path)}`
       return (
         <iframe
           src={pdfUrl}

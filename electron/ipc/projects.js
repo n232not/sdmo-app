@@ -8,13 +8,13 @@ const {
   buildExport, mergeImport, createFromImport,
   buildReviewsWorkbook,
   doLocalSync, doCloudSync,
-  syncConfigLocal, syncConfigCloud,
+  syncProjectStateLocal, syncProjectStateCloud,
   mergeConfigImport, bumpConfigVersion, bumpAndSync,
   markSynced, getLastSyncAt,
-  recordStructureTombstone,
+  mergeProjectStateImport, assertProjectStateCompatible, PROJECT_STATE_FILENAME,
   safeJsonParse,
 } = require('../sync')
-const { randomUUID } = require('crypto')
+const structureService = require('../services/structure')
 
 // In-memory unlock sessions — cleared on app restart. A project is "unlocked"
 // when its password has been entered this session (or it has no password).
@@ -166,7 +166,8 @@ module.exports = function (ipcMain) {
   ipcMain.handle('sync:acceptConfigUpdate', (_, projectId, configData) => {
     const db = getDb()
     try {
-      mergeConfigImport(db, projectId, configData, { force: true })
+      if (configData?.sdmo_sync) mergeProjectStateImport(db, projectId, configData, { merge: true })
+      else mergeConfigImport(db, projectId, configData, { force: true })
       return { ok: true }
     } catch (e) {
       return { error: e.message }
@@ -242,34 +243,7 @@ module.exports = function (ipcMain) {
   // Setup: media types
   ipcMain.handle('setup:saveMediaType', (_, projectId, data) => {
     const db = getDb()
-    if (data.id) {
-      db.prepare("UPDATE media_types SET name=?, reviews_required=?, allow_custom_tags=?, color=?, updated_at=datetime('now') WHERE id=?")
-        .run(data.name, data.reviews_required, data.allow_custom_tags ? 1 : 0, data.color, data.id)
-      db.prepare('DELETE FROM timestamp_tags WHERE media_type_id=?').run(data.id)
-      const insertTag = db.prepare('INSERT INTO timestamp_tags (media_type_id, label, color, description) VALUES (?,?,?,?)')
-      for (const tag of (data.tags || [])) insertTag.run(data.id, tag.label, tag.color || '#6366f1', tag.description || '')
-      db.prepare('DELETE FROM workspace_tabs WHERE media_type_id=?').run(data.id)
-      const insertTab = db.prepare('INSERT INTO workspace_tabs (media_type_id, tab_type, ref_id, label, sort_order) VALUES (?,?,?,?,?)')
-      for (let i = 0; i < (data.workspace_tabs || []).length; i++) {
-        const tab = data.workspace_tabs[i]
-        insertTab.run(data.id, tab.tab_type, tab.ref_id, tab.label, i)
-      }
-      bumpAndSync(db, projectId)
-      return data.id
-    } else {
-      const r = db.prepare("INSERT INTO media_types (project_id, name, reviews_required, allow_custom_tags, color, sync_id, updated_at) VALUES (?,?,?,?,?,?,datetime('now'))")
-        .run(projectId, data.name, data.reviews_required || 1, data.allow_custom_tags ? 1 : 0, data.color || '#6366f1', randomUUID())
-      const mediaTypeId = r.lastInsertRowid
-      const insertTag = db.prepare('INSERT INTO timestamp_tags (media_type_id, label, color, description) VALUES (?,?,?,?)')
-      for (const tag of (data.tags || [])) insertTag.run(mediaTypeId, tag.label, tag.color || '#6366f1', tag.description || '')
-      const insertTab = db.prepare('INSERT INTO workspace_tabs (media_type_id, tab_type, ref_id, label, sort_order) VALUES (?,?,?,?,?)')
-      for (let i = 0; i < (data.workspace_tabs || []).length; i++) {
-        const tab = data.workspace_tabs[i]
-        insertTab.run(mediaTypeId, tab.tab_type, tab.ref_id, tab.label, i)
-      }
-      bumpAndSync(db, projectId)
-      return mediaTypeId
-    }
+    return structureService.saveMediaType(db, projectId, data)
   })
 
   // Count reviews affected by deleting a media type
@@ -284,11 +258,7 @@ module.exports = function (ipcMain) {
 
   ipcMain.handle('setup:deleteMediaType', (_, projectId, id) => {
     const db = getDb()
-    backupDb('pre-delete-mediatype')
-    recordStructureTombstone(db, projectId, 'media_type', id)
-    db.prepare('DELETE FROM media_types WHERE id=?').run(id)
-    bumpAndSync(db, projectId)
-    return true
+    return structureService.deleteMediaType(db, projectId, id)
   })
 
   ipcMain.handle('setup:listMediaTypes', (_, projectId) => {
@@ -304,16 +274,7 @@ module.exports = function (ipcMain) {
   // Setup: forms
   ipcMain.handle('setup:saveForm', (_, projectId, data) => {
     const db = getDb()
-    const schema = typeof data.schema === 'string' ? data.schema : JSON.stringify(data.schema)
-    if (data.id) {
-      db.prepare("UPDATE forms SET name=?, schema=?, updated_at=datetime('now') WHERE id=?").run(data.name, schema, data.id)
-      bumpAndSync(db, projectId)
-      return data.id
-    } else {
-      const r = db.prepare('INSERT INTO forms (project_id, name, schema, sync_id) VALUES (?,?,?,?)').run(projectId, data.name, schema, randomUUID())
-      bumpAndSync(db, projectId)
-      return r.lastInsertRowid
-    }
+    return structureService.saveForm(db, projectId, data)
   })
 
   // Count form responses for a form before deleting
@@ -324,12 +285,7 @@ module.exports = function (ipcMain) {
 
   ipcMain.handle('setup:deleteForm', (_, projectId, id) => {
     const db = getDb()
-    // Deleting a form cascades to all reviewers' form_responses — snapshot first.
-    backupDb('pre-delete-form')
-    recordStructureTombstone(db, projectId, 'form', id)
-    db.prepare('DELETE FROM forms WHERE id=?').run(id)
-    bumpAndSync(db, projectId)
-    return true
+    return structureService.deleteForm(db, projectId, id)
   })
 
   ipcMain.handle('setup:listForms', (_, projectId) => {
@@ -347,25 +303,12 @@ module.exports = function (ipcMain) {
   // Setup: instructions
   ipcMain.handle('setup:saveInstruction', (_, projectId, data) => {
     const db = getDb()
-    if (data.id) {
-      db.prepare("UPDATE instructions SET name=?, content=?, content_type=?, file_path=?, updated_at=datetime('now') WHERE id=?")
-        .run(data.name, data.content || '', data.content_type || 'markdown', data.file_path || null, data.id)
-      bumpAndSync(db, projectId)
-      return data.id
-    } else {
-      const r = db.prepare("INSERT INTO instructions (project_id, name, content, content_type, file_path, sync_id, updated_at) VALUES (?,?,?,?,?,?,datetime('now'))")
-        .run(projectId, data.name, data.content || '', data.content_type || 'markdown', data.file_path || null, randomUUID())
-      bumpAndSync(db, projectId)
-      return r.lastInsertRowid
-    }
+    return structureService.saveInstruction(db, projectId, data)
   })
 
   ipcMain.handle('setup:deleteInstruction', (_, projectId, id) => {
     const db = getDb()
-    recordStructureTombstone(db, projectId, 'instruction', id)
-    db.prepare('DELETE FROM instructions WHERE id=?').run(id)
-    bumpAndSync(db, projectId)
-    return true
+    return structureService.deleteInstruction(db, projectId, id)
   })
 
   ipcMain.handle('setup:listInstructions', (_, projectId) => {
@@ -404,14 +347,15 @@ module.exports = function (ipcMain) {
   // Join project by pointing to an existing local sync folder
   ipcMain.handle('sync:joinFromLocalFolder', async (_, folderPath) => {
     if (!fs.existsSync(folderPath)) return { error: 'Folder does not exist' }
-    const configPath = path.join(folderPath, 'project-config.json')
-    if (!fs.existsSync(configPath)) {
-      return { error: 'No project-config.json found here. Make sure you select the sync folder, not the media folder.' }
+    const statePath = path.join(folderPath, PROJECT_STATE_FILENAME)
+    const legacyConfigPath = path.join(folderPath, 'project-config.json')
+    if (!fs.existsSync(statePath) && !fs.existsSync(legacyConfigPath)) {
+      return { error: `No ${PROJECT_STATE_FILENAME} or project-config.json found here. Make sure you select the sync folder, not the media folder.` }
     }
     const db = getDb()
     try {
-      const data = JSON.parse(fs.readFileSync(configPath, 'utf8'))
-      if (!data?.sdmo) return { error: 'Not a valid SDMo sync folder' }
+      const data = JSON.parse(fs.readFileSync(fs.existsSync(statePath) ? statePath : legacyConfigPath, 'utf8'))
+      if (!data?.sdmo_sync && !data?.sdmo) return { error: 'Not a valid SDMo sync folder' }
       const r = db.prepare(
         'INSERT INTO projects (name, description, sync_folder, owner_password_hash) VALUES (?,?,?,?)'
       ).run(
@@ -424,7 +368,12 @@ module.exports = function (ipcMain) {
       if (data.project?.keybinds) {
         db.prepare('UPDATE projects SET keybinds=? WHERE id=?').run(JSON.stringify(data.project.keybinds), projectId)
       }
-      mergeConfigImport(db, projectId, data, { force: true })
+      if (data.sdmo_sync) {
+        assertProjectStateCompatible(data)
+        mergeProjectStateImport(db, projectId, data, { merge: true })
+      } else {
+        mergeConfigImport(db, projectId, data, { force: true })
+      }
       return { ok: true, projectId, projectName: data.project?.name || 'Project' }
     } catch (e) {
       return { error: e.message }
@@ -438,13 +387,14 @@ module.exports = function (ipcMain) {
       const { getAdapter } = require('../cloud/cloudSync')
       const adapter = getAdapter(provider)
       const files = await adapter.listFiles(folderId)
+      const stateFile = files.find(f => f.name === PROJECT_STATE_FILENAME)
       const configFile = files.find(f => f.name === 'project-config.json')
-      if (!configFile) {
-        return { error: "No project-config.json found in this folder. Select the project's sync folder." }
+      if (!stateFile && !configFile) {
+        return { error: `No ${PROJECT_STATE_FILENAME} or project-config.json found in this folder. Select the project's sync folder.` }
       }
-      const content = await adapter.readFile(configFile.id)
+      const content = await adapter.readFile((stateFile || configFile).id)
       const data = JSON.parse(content)
-      if (!data?.sdmo) return { error: 'Not a valid SDMo sync folder' }
+      if (!data?.sdmo_sync && !data?.sdmo) return { error: 'Not a valid SDMo sync folder' }
       const r = db.prepare(
         'INSERT INTO projects (name, description, cloud_provider, cloud_folder_id, owner_password_hash) VALUES (?,?,?,?,?)'
       ).run(
@@ -458,7 +408,12 @@ module.exports = function (ipcMain) {
       if (data.project?.keybinds) {
         db.prepare('UPDATE projects SET keybinds=? WHERE id=?').run(JSON.stringify(data.project.keybinds), projectId)
       }
-      mergeConfigImport(db, projectId, data, { force: true })
+      if (data.sdmo_sync) {
+        assertProjectStateCompatible(data)
+        mergeProjectStateImport(db, projectId, data, { merge: true })
+      } else {
+        mergeConfigImport(db, projectId, data, { force: true })
+      }
       const s = getSettings()
       const names = { ...(s.cloud_folder_names || {}), [String(projectId)]: folderName }
       saveSettings({ cloud_folder_names: names })
@@ -499,12 +454,12 @@ module.exports = function (ipcMain) {
 
     try {
       if (project.sync_folder) {
-        syncConfigLocal(db, projectId, project.sync_folder)
+        syncProjectStateLocal(db, projectId, project.sync_folder)
       } else if (project.cloud_provider && project.cloud_folder_id) {
         const { getAdapter } = require('../cloud/cloudSync')
         const adapter = getAdapter(project.cloud_provider)
         const files = await adapter.listFiles(project.cloud_folder_id)
-        await syncConfigCloud(db, projectId, adapter, project.cloud_folder_id, files)
+        await syncProjectStateCloud(db, projectId, adapter, project.cloud_folder_id, files)
       }
       return { ok: true }
     } catch (e) {

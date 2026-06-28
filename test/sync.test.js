@@ -615,7 +615,7 @@ test('legacy import: an in_progress review is upgraded in place when a submitted
 
 // ─── Full local-folder sync between two "machines" (separate DBs, shared folder) ─
 
-test('doLocalSync: two machines exchange config + reviews + the .xlsx report through a shared folder', async () => {
+test('doLocalSync: two machines exchange full project state through a shared folder', async () => {
   const folder = tmpDir('sdmo-sync-')
 
   // Machine A — authoritative structure + Alice's submitted review.
@@ -635,10 +635,13 @@ test('doLocalSync: two machines exchange config + reviews + the .xlsx report thr
 
   await sync.doLocalSync(a, pa, folder, 'uuid-A', 'Alice')
 
-  assert.ok(fs.existsSync(path.join(folder, 'project-config.json')), 'config written')
+  assert.ok(fs.existsSync(path.join(folder, sync.PROJECT_STATE_FILENAME)), 'project state written')
   assert.ok(fs.existsSync(path.join(folder, 'manifest.json')), 'manifest written')
-  assert.ok(fs.existsSync(path.join(folder, 'reviews', 'uuid-A.json')), 'own review file written')
   assert.ok(fs.existsSync(path.join(folder, sync.REVIEWS_REPORT_FILENAME)), 'xlsx report written')
+  const state = JSON.parse(fs.readFileSync(path.join(folder, sync.PROJECT_STATE_FILENAME), 'utf8'))
+  assert.strictEqual(state.protocol_version, sync.SYNC_PROTOCOL_VERSION)
+  assert.strictEqual(state.forms.length, 1)
+  assert.strictEqual(state.reviews.length, 1, 'reviews included in shared project state')
 
   // Machine B — fresh placeholder project pulls A's structure + Alice's review.
   const b = makeDb()
@@ -658,7 +661,8 @@ test('doLocalSync: two machines exchange config + reviews + the .xlsx report thr
   const bMediaId = b.prepare(`SELECT m.id FROM media_files m JOIN encounters e ON m.encounter_id=e.id WHERE e.project_id=?`).get(pb).id
   addReview(b, bMediaId, 'Bob', { reviewer_uuid: 'uuid-B', status: 'in_progress' })
   await sync.doLocalSync(b, pb, folder, 'uuid-B', 'Bob')
-  assert.ok(fs.existsSync(path.join(folder, 'reviews', 'uuid-B.json')), "Bob's review file written")
+  const stateAfterBob = JSON.parse(fs.readFileSync(path.join(folder, sync.PROJECT_STATE_FILENAME), 'utf8'))
+  assert.strictEqual(stateAfterBob.reviews.length, 2, "Bob's review merged into project state")
 
   // A syncs again and now sees both reviewers.
   await sync.doLocalSync(a, pa, folder, 'uuid-A', 'Alice')
@@ -672,7 +676,7 @@ test('doLocalSync: two machines exchange config + reviews + the .xlsx report thr
   a.close(); b.close()
 })
 
-test('doLocalSync: a structure tombstone deletes the item on a peer and config cannot resurrect it', async () => {
+test('doLocalSync: a structure tombstone deletes the item on a peer and snapshot state cannot resurrect it', async () => {
   const folder = tmpDir('sdmo-sync-tomb-')
 
   // A publishes structure (one encounter) at a bumped version.
@@ -693,7 +697,8 @@ test('doLocalSync: a structure tombstone deletes the item on a peer and config c
   sync.recordEncounterTombstone(a, pa, encA.id)
   a.prepare('DELETE FROM encounters WHERE id=?').run(encA.id)
   await sync.doLocalSync(a, pa, folder, 'uuid-A', 'Alice')
-  assert.ok(fs.existsSync(path.join(folder, 'deleted-structure.json')), 'structure tombstone file written')
+  const state = JSON.parse(fs.readFileSync(path.join(folder, sync.PROJECT_STATE_FILENAME), 'utf8'))
+  assert.strictEqual(state.deleted_structure.length, 2, 'structure tombstones included in project state')
 
   // B syncs: the tombstone removes it, and the still-present config entry must NOT resurrect it.
   await sync.doLocalSync(b, pb, folder, 'uuid-B', 'Bob')
@@ -729,4 +734,39 @@ test('doLocalSync: concurrent structure edits on two machines converge (self-hea
   assert.strictEqual(sync.structureFingerprint(a, pa), sync.structureFingerprint(b, pb), 'fully converged')
 
   a.close(); b.close()
+})
+
+test('doLocalSync: legacy sync folder is migrated forward to project-state.json', async () => {
+  const folder = tmpDir('sdmo-legacy-migrate-')
+
+  const legacy = makeDb()
+  const pLegacy = createProject(legacy, 'Legacy Study')
+  const enc = addEncounter(legacy, pLegacy, 'P1', 'enc-legacy')
+  const media = addMedia(legacy, enc.id, 'visit.mp4', { sync_id: 'media-legacy' })
+  addReview(legacy, media.id, 'Alice', { reviewer_uuid: 'uuid-A', status: 'submitted' })
+  sync.bumpConfigVersion(legacy, pLegacy)
+  sync.syncConfigLocal(legacy, pLegacy, folder)
+  fs.mkdirSync(path.join(folder, 'reviews'), { recursive: true })
+  fs.writeFileSync(
+    path.join(folder, 'reviews', 'uuid-A.json'),
+    JSON.stringify(sync.buildReviewExport(legacy, pLegacy, 'uuid-A', 'Alice'), null, 2)
+  )
+
+  const fresh = makeDb()
+  const pFresh = createProject(fresh, 'Placeholder')
+  await sync.doLocalSync(fresh, pFresh, folder, 'uuid-B', 'Bob')
+
+  assert.ok(fs.existsSync(path.join(folder, sync.PROJECT_STATE_FILENAME)), 'legacy folder rewritten to protocol v2')
+  assert.strictEqual(fresh.prepare('SELECT COUNT(*) n FROM encounters WHERE project_id=?').get(pFresh).n, 1)
+  assert.strictEqual(
+    fresh.prepare(`
+      SELECT COUNT(*) n FROM reviews r
+      JOIN media_files mf ON r.media_file_id = mf.id
+      JOIN encounters e ON mf.encounter_id = e.id
+      WHERE e.project_id=? AND r.deleted_at IS NULL
+    `).get(pFresh).n,
+    1
+  )
+
+  legacy.close(); fresh.close()
 })

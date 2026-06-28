@@ -42,8 +42,8 @@ export default function WorkspacePage() {
     function onReviewUpdated(updatedId) {
       if (String(updatedId) === String(reviewId)) refreshReviewData(reviewId)
     }
-    api.onReviewUpdated(onReviewUpdated)
-    return () => api.offReviewUpdated()
+    const subId = api.onReviewUpdated(onReviewUpdated)
+    return () => api.offReviewUpdated(subId)
   }, [reviewId])
 
   async function load() {
@@ -223,7 +223,7 @@ export default function WorkspacePage() {
               const instr = instructions[currentTab.ref_id]
               if (!instr) return <div className="empty-state"><p className="text-sm">Instruction not found.</p></div>
               if (instr.content_type === 'pdf' && instr.file_path) {
-                return <iframe src={`localfile://${instr.file_path}`} style={{ width: '100%', height: '100%', border: 'none', minHeight: 600 }} title={instr.name} />
+                return <iframe src={`localfile://${encodeURIComponent(instr.file_path)}`} style={{ width: '100%', height: '100%', border: 'none', minHeight: 600 }} title={instr.name} />
               }
               return <div className="prose"><ReactMarkdown remarkPlugins={[remarkGfm]}>{instr.content || ''}</ReactMarkdown></div>
             })()

@@ -1,7 +1,13 @@
 const { app, BrowserWindow, ipcMain, protocol } = require('electron')
 const path = require('path')
+const fs = require('fs')
+const { validateIpcArgs } = require('./ipc/contracts')
 
 app.setName('SDMo')
+
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'localfile', privileges: { standard: true, secure: true, stream: true } },
+])
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 
@@ -17,6 +23,7 @@ function wrapIpcMain(target) {
   target.handle = (channel, fn) => {
     origHandle(channel, async (...args) => {
       try {
+        validateIpcArgs(channel, args.slice(1))
         return await fn(...args)
       } catch (e) {
         console.error(`[ipc] ${channel} failed:`, e?.stack || e?.message || e)
@@ -27,6 +34,50 @@ function wrapIpcMain(target) {
   return target
 }
 wrapIpcMain(ipcMain)
+
+function normalizePath(filePath) {
+  try {
+    return path.resolve(filePath)
+  } catch {
+    return null
+  }
+}
+
+function isKnownLocalFile(filePath) {
+  const requested = normalizePath(filePath)
+  if (!requested || !fs.existsSync(requested)) return false
+
+  try {
+    const { getDb } = require('./db')
+    const { getBaseFolder } = require('./mediaLinks')
+    const db = getDb()
+
+    const direct = db.prepare(`
+      SELECT file_path FROM media_files WHERE file_path IS NOT NULL AND file_path != ''
+      UNION
+      SELECT file_path FROM instructions WHERE file_path IS NOT NULL AND file_path != ''
+    `).all()
+    if (direct.some(row => normalizePath(row.file_path) === requested)) return true
+
+    const links = db.prepare(`
+      SELECT l.local_path, l.is_relative, e.project_id
+      FROM media_file_links l
+      JOIN media_files mf ON l.media_file_id = mf.id
+      JOIN encounters e ON mf.encounter_id = e.id
+      WHERE l.not_applicable=0 AND l.local_path IS NOT NULL AND l.local_path != ''
+    `).all()
+    for (const link of links) {
+      const fullPath = link.is_relative
+        ? path.join(getBaseFolder(link.project_id) || '', link.local_path)
+        : link.local_path
+      if (normalizePath(fullPath) === requested) return true
+    }
+  } catch (e) {
+    console.error('[main] localfile allowlist check failed:', e?.message || e)
+  }
+
+  return false
+}
 
 // Last-resort process guards so a stray async error (timers, cloud callbacks, etc.)
 // logs instead of silently killing the app.
@@ -48,7 +99,6 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      webSecurity: false,
     },
   })
 
@@ -74,7 +124,8 @@ try {
 app.whenReady().then(() => {
   protocol.registerFileProtocol('localfile', (request, callback) => {
     const filePath = decodeURIComponent(request.url.replace('localfile://', ''))
-    callback({ path: filePath })
+    if (isKnownLocalFile(filePath)) callback({ path: filePath })
+    else callback({ error: -6 })
   })
 
   createWindow()
@@ -114,7 +165,6 @@ ipcMain.handle('window:openWorkspace', (_, url) => {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      webSecurity: false,
     },
   })
   workspaceWindows[reviewId] = win
