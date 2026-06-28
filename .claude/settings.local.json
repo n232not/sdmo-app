@@ -97,7 +97,10 @@
       "Read(//Users/nihanthpinnaka/Library/Application Support/Claude/local-agent-mode-sessions/skills-plugin/c9db9cc5-7c07-4960-9084-7d41912f482d/5371df74-3b8a-4320-a2a8-114a6257c043/skills/pptx/**)",
       "Bash(extract-text \"/Users/nihanthpinnaka/Downloads/SDMo distinctions draft.pptx\")",
       "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:5173)",
-      "mcp__visualize__read_me"
+      "mcp__visualize__read_me",
+      "Bash(sed -i '' \"s#require\\('./node_modules/better-sqlite3'\\)#require\\('$\\(pwd\\)/node_modules/better-sqlite3'\\)#\" /private/tmp/claude-501/-Users-nihanthpinnaka-Documents-SDMo-App/430a4e71-d566-4730-abaf-e288a9a1e101/scratchpad/dbtest.js)",
+      "Bash(node /private/tmp/claude-501/-Users-nihanthpinnaka-Documents-SDMo-App/430a4e71-d566-4730-abaf-e288a9a1e101/scratchpad/dbtest.js)",
+      "Bash(ELECTRON_RUN_AS_NODE=1 ./node_modules/.bin/electron /private/tmp/claude-501/-Users-nihanthpinnaka-Documents-SDMo-App/430a4e71-d566-4730-abaf-e288a9a1e101/scratchpad/dbtest.js)"
     ]
   }
 }

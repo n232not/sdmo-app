@@ -1,4 +1,4 @@
-const { getDb } = require('../db')
+const { getDb, backupDb } = require('../db')
 const { dialog } = require('electron')
 const fs = require('fs')
 const path = require('path')
@@ -93,8 +93,8 @@ module.exports = function (ipcMain) {
   ipcMain.handle('media:create', (_, projectId, encounterId, name) => {
     const db = getDb()
     const result = db.prepare(
-      'INSERT INTO media_files (encounter_id, name, file_path, file_type) VALUES (?, ?, ?, ?)'
-    ).run(encounterId, name.trim(), '', 'other')
+      'INSERT INTO media_files (encounter_id, name, file_path, file_type, sync_id) VALUES (?, ?, ?, ?, ?)'
+    ).run(encounterId, name.trim(), '', 'other', crypto.randomUUID())
     bumpAndSync(db, projectId)
     return { id: result.lastInsertRowid }
   })
@@ -227,6 +227,7 @@ module.exports = function (ipcMain) {
   ipcMain.handle('media:deleteFile', (_, projectId, mediaFileId) => {
     const db = getDb()
     // FK cascade: media_file → reviews → timestamps/form_responses
+    backupDb('pre-delete-media')
     db.prepare('DELETE FROM media_files WHERE id=?').run(mediaFileId)
     bumpAndSync(db, projectId)
     return true
@@ -341,7 +342,7 @@ module.exports = function (ipcMain) {
       title: `Locate: ${mf?.name || 'media file'}`,
       properties: ['openFile'],
       filters: [
-        { name: 'Media Files', extensions: ['mp4', 'mp3', 'mov', 'avi', 'mkv', 'webm', 'm4v', 'wav', 'ogg', 'pdf', 'txt', 'md', 'docx'] },
+        { name: 'Media Files', extensions: ALL_EXTS.map(e => e.slice(1)) },
         { name: 'All Files', extensions: ['*'] },
       ],
     })

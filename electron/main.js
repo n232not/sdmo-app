@@ -8,6 +8,35 @@ const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 let mainWindow
 const workspaceWindows = {} // reviewId string → BrowserWindow
 
+// Wrap ipcMain.handle so every handler across all IPC modules gets a try/catch.
+// Errors are logged in the main process (for debuggability) and re-thrown so the
+// renderer's awaited promise rejects with the original message instead of a generic
+// "Error invoking remote method" string. Applied once, before modules register.
+function wrapIpcMain(target) {
+  const origHandle = target.handle.bind(target)
+  target.handle = (channel, fn) => {
+    origHandle(channel, async (...args) => {
+      try {
+        return await fn(...args)
+      } catch (e) {
+        console.error(`[ipc] ${channel} failed:`, e?.stack || e?.message || e)
+        throw e
+      }
+    })
+  }
+  return target
+}
+wrapIpcMain(ipcMain)
+
+// Last-resort process guards so a stray async error (timers, cloud callbacks, etc.)
+// logs instead of silently killing the app.
+process.on('uncaughtException', (e) => {
+  console.error('[main] uncaughtException:', e?.stack || e?.message || e)
+})
+process.on('unhandledRejection', (reason) => {
+  console.error('[main] unhandledRejection:', reason?.stack || reason?.message || reason)
+})
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
@@ -49,6 +78,10 @@ app.whenReady().then(() => {
   })
 
   createWindow()
+
+  // Safety-net snapshot of the database (throttled to once per 12h) so any later
+  // corruption or accidental destructive action is recoverable.
+  try { require('./db').backupDb('startup') } catch (e) { console.error('[main] startup backup failed:', e.message) }
 
   const { setMainWindow } = require('./sync')
   setMainWindow(mainWindow)

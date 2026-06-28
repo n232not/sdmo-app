@@ -1,4 +1,4 @@
-const { getDb } = require('../db')
+const { getDb, backupDb } = require('../db')
 const { dialog } = require('electron')
 const fs = require('fs')
 const crypto = require('crypto')
@@ -60,6 +60,7 @@ module.exports = function (ipcMain) {
   ipcMain.handle('encounters:delete', (_, projectId, encounterId) => {
     const db = getDb()
     // FK cascade: encounter → media_files → reviews → timestamps/form_responses
+    backupDb('pre-delete-encounter')
     db.prepare('DELETE FROM encounters WHERE id=?').run(encounterId)
     bumpAndSync(db, projectId)
     return true
@@ -75,8 +76,8 @@ module.exports = function (ipcMain) {
         ).run(projectId, name.trim(), '', crypto.randomUUID())
         for (const slot of slots) {
           db.prepare(
-            'INSERT INTO media_files (encounter_id, name, file_path, file_type, media_type_id) VALUES (?,?,?,?,?)'
-          ).run(enc.lastInsertRowid, slot.name, '', 'other', slot.mediaTypeId || null)
+            'INSERT INTO media_files (encounter_id, name, file_path, file_type, media_type_id, sync_id) VALUES (?,?,?,?,?,?)'
+          ).run(enc.lastInsertRowid, slot.name, '', 'other', slot.mediaTypeId || null, crypto.randomUUID())
         }
       }
     })()
@@ -194,15 +195,15 @@ module.exports = function (ipcMain) {
         ).run(pid, encName, '', crypto.randomUUID())
         for (const f of files) {
           db.prepare(
-            'INSERT INTO media_files (encounter_id, name, file_path, file_type, media_type_id) VALUES (?,?,?,?,?)'
-          ).run(enc.lastInsertRowid, f.fileName, '', 'other', f.mediaTypeId || null)
+            'INSERT INTO media_files (encounter_id, name, file_path, file_type, media_type_id, sync_id) VALUES (?,?,?,?,?,?)'
+          ).run(enc.lastInsertRowid, f.fileName, '', 'other', f.mediaTypeId || null, crypto.randomUUID())
         }
       }
       for (const { encId, files } of toAddFiles) {
         for (const f of files) {
           db.prepare(
-            'INSERT INTO media_files (encounter_id, name, file_path, file_type, media_type_id) VALUES (?,?,?,?,?)'
-          ).run(Number(encId), f.fileName, '', 'other', f.mediaTypeId || null)
+            'INSERT INTO media_files (encounter_id, name, file_path, file_type, media_type_id, sync_id) VALUES (?,?,?,?,?,?)'
+          ).run(Number(encId), f.fileName, '', 'other', f.mediaTypeId || null, crypto.randomUUID())
         }
       }
     })()

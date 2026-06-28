@@ -5,14 +5,32 @@ const { randomUUID } = require('crypto')
 
 const SETTINGS_PATH = path.join(app.getPath('userData'), 'app-settings.json')
 
+const BACKUP_PATH = SETTINGS_PATH + '.bak'
+
 function getSettings() {
-  try { return JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8')) } catch { return {} }
+  // Try the live file first, then the last-known-good backup. A truncated/corrupt
+  // file (e.g. from a crash mid-write) must not silently wipe user_uuid,
+  // owner_projects, cloud tokens, and media_base_folders.
+  for (const p of [SETTINGS_PATH, BACKUP_PATH]) {
+    try {
+      const raw = fs.readFileSync(p, 'utf8')
+      if (raw.trim()) return JSON.parse(raw)
+    } catch (e) {
+      if (e.code !== 'ENOENT') console.error(`[settings] failed to read ${p}:`, e.message)
+    }
+  }
+  return {}
 }
 
 function saveSettings(data) {
   const current = getSettings()
   const merged = { ...current, ...data }
-  fs.writeFileSync(SETTINGS_PATH, JSON.stringify(merged, null, 2))
+  const tmp = SETTINGS_PATH + '.tmp'
+  // Atomic write: write to a temp file, keep the prior good copy as .bak, then rename.
+  // rename() is atomic on the same filesystem, so a crash can never leave a half-written file.
+  fs.writeFileSync(tmp, JSON.stringify(merged, null, 2))
+  try { if (fs.existsSync(SETTINGS_PATH)) fs.copyFileSync(SETTINGS_PATH, BACKUP_PATH) } catch (_) {}
+  fs.renameSync(tmp, SETTINGS_PATH)
   return merged
 }
 

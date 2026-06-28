@@ -16,20 +16,47 @@ function getDb() {
 
   initSchema(db)
   migrate(db)
+  runDataMigrations(db)
+  seedMediaLinks(db)
 
+  return db
+}
+
+// ─── Versioned data migrations (PRAGMA user_version) ────────────────────────────
+// `migrate()` above only adds columns/indexes idempotently. This runner is the home
+// for data transforms: each entry runs once, in a transaction, advancing user_version.
+// New records always get their sync ids at insert time, so these are upgrade-only.
+function runDataMigrations(db) {
   const crypto = require('crypto')
-  for (const enc of db.prepare("SELECT id FROM encounters WHERE sync_id IS NULL").all()) {
-    db.prepare("UPDATE encounters SET sync_id=? WHERE id=?").run(crypto.randomUUID(), enc.id)
-  }
-  for (const mf of db.prepare("SELECT id FROM media_files WHERE sync_id IS NULL").all()) {
-    db.prepare("UPDATE media_files SET sync_id=? WHERE id=?").run(crypto.randomUUID(), mf.id)
-  }
-  for (const rev of db.prepare("SELECT id FROM reviews WHERE review_sync_id IS NULL").all()) {
-    db.prepare("UPDATE reviews SET review_sync_id=? WHERE id=?").run(crypto.randomUUID(), rev.id)
-  }
 
-  // Seed link records from existing file_path values on machines where the file actually exists.
-  // This keeps existing setups working without requiring re-linking.
+  const migrations = [
+    // v0 → v1: backfill sync ids on rows created before sync ids existed
+    (db) => {
+      for (const enc of db.prepare("SELECT id FROM encounters WHERE sync_id IS NULL").all()) {
+        db.prepare("UPDATE encounters SET sync_id=? WHERE id=?").run(crypto.randomUUID(), enc.id)
+      }
+      for (const mf of db.prepare("SELECT id FROM media_files WHERE sync_id IS NULL").all()) {
+        db.prepare("UPDATE media_files SET sync_id=? WHERE id=?").run(crypto.randomUUID(), mf.id)
+      }
+      for (const rev of db.prepare("SELECT id FROM reviews WHERE review_sync_id IS NULL").all()) {
+        db.prepare("UPDATE reviews SET review_sync_id=? WHERE id=?").run(crypto.randomUUID(), rev.id)
+      }
+    },
+  ]
+
+  let version = db.pragma('user_version', { simple: true })
+  for (let v = version; v < migrations.length; v++) {
+    db.transaction(() => {
+      migrations[v](db)
+      db.pragma(`user_version = ${v + 1}`)
+    })()
+  }
+}
+
+// Seed link records from existing file_path values on machines where the file actually
+// exists. Environment-sensitive (depends on local filesystem), so it runs every launch
+// rather than being gated by user_version — it's a no-op once links exist.
+function seedMediaLinks(db) {
   const mfsWithPath = db.prepare("SELECT id, file_path FROM media_files WHERE file_path IS NOT NULL AND file_path != ''").all()
   for (const mf of mfsWithPath) {
     const existing = db.prepare("SELECT id FROM media_file_links WHERE media_file_id=?").get(mf.id)
@@ -39,8 +66,50 @@ function getDb() {
       } catch (_) {}
     }
   }
+}
 
-  return db
+// ─── Backups ────────────────────────────────────────────────────────────────────
+// Online backup (WAL-safe) into userData/backups, newest-kept rotation. Used as a
+// safety net on startup and before any irreversible/cascading operation.
+const KEEP_BACKUPS = 15
+
+function rotateBackups(dir) {
+  try {
+    const files = fs.readdirSync(dir)
+      .filter(f => f.startsWith('sdmo-') && f.endsWith('.db'))
+      .map(f => ({ f, t: fs.statSync(path.join(dir, f)).mtimeMs }))
+      .sort((a, b) => b.t - a.t)
+    for (const { f } of files.slice(KEEP_BACKUPS)) {
+      try { fs.unlinkSync(path.join(dir, f)) } catch (_) {}
+    }
+  } catch (_) {}
+}
+
+// reason: short tag for the filename. For 'startup' we throttle to once per 12h so
+// launches don't pile up backups; explicit pre-destructive backups always run.
+function backupDb(reason = 'manual') {
+  try {
+    const database = getDb()
+    const dir = path.join(app.getPath('userData'), 'backups')
+    fs.mkdirSync(dir, { recursive: true })
+
+    if (reason === 'startup') {
+      const recent = fs.readdirSync(dir)
+        .filter(f => f.startsWith('sdmo-') && f.endsWith('.db'))
+        .some(f => Date.now() - fs.statSync(path.join(dir, f)).mtimeMs < 12 * 60 * 60 * 1000)
+      if (recent) return
+    }
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const dest = path.join(dir, `sdmo-${stamp}-${reason}.db`)
+    // VACUUM INTO writes a complete, WAL-correct snapshot synchronously, so it always
+    // finishes before any subsequent write (e.g. the delete that triggered a
+    // pre-destructive backup). The async .backup() API could otherwise race the delete.
+    database.exec(`VACUUM INTO '${dest.replace(/'/g, "''")}'`)
+    rotateBackups(dir)
+  } catch (e) {
+    console.error('[db] backup failed:', e.message)
+  }
 }
 
 function migrate(db) {
@@ -85,6 +154,16 @@ function migrate(db) {
       linked_at TEXT DEFAULT (datetime('now')),
       UNIQUE(media_file_id)
     )`,
+    // Indexes on the foreign keys / sync ids that every list and sync query filters on.
+    // SQLite only auto-indexes PK and UNIQUE columns, so these are full-scans otherwise.
+    "CREATE INDEX IF NOT EXISTS idx_encounters_project ON encounters(project_id)",
+    "CREATE INDEX IF NOT EXISTS idx_media_files_encounter ON media_files(encounter_id)",
+    "CREATE INDEX IF NOT EXISTS idx_media_files_sync ON media_files(sync_id)",
+    "CREATE INDEX IF NOT EXISTS idx_reviews_media_file ON reviews(media_file_id)",
+    "CREATE INDEX IF NOT EXISTS idx_reviews_sync ON reviews(review_sync_id)",
+    "CREATE INDEX IF NOT EXISTS idx_timestamps_review ON timestamps(review_id)",
+    "CREATE INDEX IF NOT EXISTS idx_form_responses_review ON form_responses(review_id)",
+    "CREATE INDEX IF NOT EXISTS idx_deleted_reviews_project ON deleted_reviews(project_id)",
   ]
   for (const sql of migrations) {
     try { db.exec(sql) } catch (_) {}
@@ -202,4 +281,4 @@ function deleteReviewsForMediaFile(db, mediaFileId) {
   db.prepare('DELETE FROM reviews WHERE media_file_id=?').run(mediaFileId)
 }
 
-module.exports = { getDb, deleteReviewsForMediaFile }
+module.exports = { getDb, deleteReviewsForMediaFile, backupDb, initSchema, migrate, runDataMigrations }

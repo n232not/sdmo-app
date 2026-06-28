@@ -106,6 +106,9 @@ async function startAuth(onServer) {
   })
 }
 
+// Serialize refreshes so parallel Drive calls don't each fire a refresh at once.
+let _refreshPromise = null
+
 async function ensureValidToken() {
   const s = getSettings()
   const tokens = s.googledrive_tokens
@@ -113,27 +116,35 @@ async function ensureValidToken() {
 
   if (Date.now() < tokens.expires_at - 5 * 60 * 1000) return tokens.access_token
 
-  const res = await fetch(TOKEN_ENDPOINT, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'refresh_token',
-      client_id: CLIENT_ID,
-      client_secret: CLIENT_SECRET,
-      refresh_token: tokens.refresh_token,
-    }).toString(),
-  })
-  const refreshed = await res.json()
-  if (refreshed.error) throw new Error(refreshed.error_description || refreshed.error)
+  if (_refreshPromise) return _refreshPromise
+  _refreshPromise = (async () => {
+    try {
+      const res = await fetch(TOKEN_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'refresh_token',
+          client_id: CLIENT_ID,
+          client_secret: CLIENT_SECRET,
+          refresh_token: tokens.refresh_token,
+        }).toString(),
+      })
+      const refreshed = await res.json()
+      if (refreshed.error) throw new Error(refreshed.error_description || refreshed.error)
 
-  saveSettings({
-    googledrive_tokens: {
-      access_token: refreshed.access_token,
-      refresh_token: tokens.refresh_token,
-      expires_at: Date.now() + refreshed.expires_in * 1000,
-    },
-  })
-  return refreshed.access_token
+      saveSettings({
+        googledrive_tokens: {
+          access_token: refreshed.access_token,
+          refresh_token: refreshed.refresh_token || tokens.refresh_token,
+          expires_at: Date.now() + refreshed.expires_in * 1000,
+        },
+      })
+      return refreshed.access_token
+    } finally {
+      _refreshPromise = null
+    }
+  })()
+  return _refreshPromise
 }
 
 async function driveRequest(method, endpoint, body, params) {

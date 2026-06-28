@@ -1,4 +1,4 @@
-const { getDb } = require('../db')
+const { getDb, backupDb } = require('../db')
 const { dialog, app } = require('electron')
 const fs = require('fs')
 const path = require('path')
@@ -343,6 +343,9 @@ module.exports = function (ipcMain) {
 
   ipcMain.handle('projects:delete', (_, id) => {
     const db = getDb()
+    backupDb('pre-delete-project')
+    const { cancelSync } = require('../sync')
+    cancelSync(id) // stop any pending/in-flight sync writing files for a deleted project
     db.prepare('DELETE FROM projects WHERE id = ?').run(id)
     return true
   })
@@ -392,6 +395,7 @@ module.exports = function (ipcMain) {
 
   ipcMain.handle('setup:deleteMediaType', (_, projectId, id) => {
     const db = getDb()
+    backupDb('pre-delete-mediatype')
     db.prepare('DELETE FROM media_types WHERE id=?').run(id)
     bumpAndSync(db, projectId)
     return true
@@ -430,6 +434,8 @@ module.exports = function (ipcMain) {
 
   ipcMain.handle('setup:deleteForm', (_, projectId, id) => {
     const db = getDb()
+    // Deleting a form cascades to all reviewers' form_responses — snapshot first.
+    backupDb('pre-delete-form')
     db.prepare('DELETE FROM forms WHERE id=?').run(id)
     bumpAndSync(db, projectId)
     return true

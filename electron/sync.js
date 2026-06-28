@@ -2,11 +2,51 @@ const fs = require('fs')
 const path = require('path')
 const { app } = require('electron')
 const crypto = require('crypto')
-const { getDb } = require('./db')
+const { getDb, backupDb } = require('./db')
 const { getSettings, getProjectName, getOrCreateUUID } = require('./settings')
+
+// Bump when the split-config file format changes in a backward-incompatible way.
+// buildConfigExport stamps this; readers refuse configs newer than they understand.
+const CONFIG_FORMAT_VERSION = 4
+
+function assertConfigCompatible(configData) {
+  const fmt = configData?.version || 1
+  if (fmt > CONFIG_FORMAT_VERSION) {
+    throw new Error(`This project was created by a newer version of SDMo (config format v${fmt}, this app supports v${CONFIG_FORMAT_VERSION}). Please update the app.`)
+  }
+}
 
 const timers = {}
 const lastSyncAt = {}
+
+// ─── Per-project sync mutex ─────────────────────────────────────────────────────
+// Prevents two syncs for the same project from interleaving (which could drop
+// tombstones or double-write config). If a sync is requested while one is running,
+// the latest request is queued and run once after the current finishes, so the
+// newest local state still gets flushed.
+const syncing = {}     // projectId -> in-flight Promise
+const syncQueued = {}  // projectId -> thunk to run after the current one
+
+function runExclusiveSync(projectId, thunk) {
+  if (syncing[projectId]) {
+    syncQueued[projectId] = thunk // keep only the latest queued request
+    return syncing[projectId]
+  }
+  const p = (async () => {
+    try {
+      await thunk()
+    } finally {
+      syncing[projectId] = null
+      const next = syncQueued[projectId]
+      if (next) {
+        syncQueued[projectId] = null
+        await runExclusiveSync(projectId, next)
+      }
+    }
+  })()
+  syncing[projectId] = p
+  return p
+}
 
 function safeJsonParse(str, fallback) {
   try { return JSON.parse(str) } catch { return fallback }
@@ -125,7 +165,7 @@ function buildConfigExport(db, projectId) {
 
   return {
     sdmo: true,
-    version: 4,
+    version: CONFIG_FORMAT_VERSION,
     config_version: project.config_version || 1,
     exported_at: new Date().toISOString(),
     project: {
@@ -319,6 +359,17 @@ function _applyConfigTransaction(db, projectId, configData) {
         ? configSyncIds.includes(localEnc.sync_id)
         : configNames.includes(localEnc.name)
       if (!inConfig) {
+        // Never let an authoritative-config prune cascade-delete reviewer work.
+        // If any review (even soft-deleted) exists under this encounter, keep it.
+        const reviewCount = db.prepare(`
+          SELECT COUNT(*) AS n FROM reviews r
+          JOIN media_files mf ON r.media_file_id = mf.id
+          WHERE mf.encounter_id = ?
+        `).get(localEnc.id).n
+        if (reviewCount > 0) {
+          console.warn(`[sync] keeping encounter "${localEnc.name}" (#${localEnc.id}) absent from config — has ${reviewCount} review(s); refusing to destroy data`)
+          continue
+        }
         db.prepare('DELETE FROM encounters WHERE id=?').run(localEnc.id)
       }
     }
@@ -335,6 +386,11 @@ function _applyConfigTransaction(db, projectId, configData) {
         ? configMediaSyncIds.includes(f.sync_id)
         : (encInConfig.media || []).some(m => m.name === f.name)
       if (!mediaInConfig) {
+        const reviewCount = db.prepare('SELECT COUNT(*) AS n FROM reviews WHERE media_file_id=?').get(f.id).n
+        if (reviewCount > 0) {
+          console.warn(`[sync] keeping media "${f.name}" (#${f.id}) absent from config — has ${reviewCount} review(s); refusing to destroy data`)
+          continue
+        }
         db.prepare('DELETE FROM media_files WHERE id=?').run(f.id)
       }
     }
@@ -346,6 +402,7 @@ function _applyConfigTransaction(db, projectId, configData) {
 
 function mergeConfigImport(db, projectId, configData, { force } = {}) {
   if (!configData?.sdmo) throw new Error('Not a valid SDMo config file')
+  assertConfigCompatible(configData)
 
   const local = db.prepare('SELECT config_version FROM projects WHERE id=?').get(projectId)
   const incomingVersion = configData.config_version || 1
@@ -478,6 +535,9 @@ function readLocalManifest(syncFolder) {
 
 function replaceStructureFromConfig(db, projectId, configData) {
   if (!configData?.sdmo) throw new Error('Not a valid SDMo config file')
+  assertConfigCompatible(configData)
+  // This is the authoritative-prune path (can remove structure). Snapshot first.
+  backupDb('pre-config-apply')
   _applyConfigTransaction(db, projectId, configData)
 }
 
@@ -528,7 +588,11 @@ async function syncConfigCloud(db, projectId, adapter, folderId, allFiles) {
 
 // ─── Local folder sync ────────────────────────────────────────────────────────
 
-async function doLocalSync(db, projectId, syncFolder, uuid, name) {
+function doLocalSync(db, projectId, syncFolder, uuid, name) {
+  return runExclusiveSync(projectId, () => _doLocalSync(db, projectId, syncFolder, uuid, name))
+}
+
+async function _doLocalSync(db, projectId, syncFolder, uuid, name) {
   fs.mkdirSync(path.join(syncFolder, 'reviews'), { recursive: true })
 
   // 1. Tombstones
@@ -574,7 +638,11 @@ async function doLocalSync(db, projectId, syncFolder, uuid, name) {
 
 // ─── Cloud sync ───────────────────────────────────────────────────────────────
 
-async function doCloudSync(db, projectId, provider, folderId, uuid, name) {
+function doCloudSync(db, projectId, provider, folderId, uuid, name) {
+  return runExclusiveSync(projectId, () => _doCloudSync(db, projectId, provider, folderId, uuid, name))
+}
+
+async function _doCloudSync(db, projectId, provider, folderId, uuid, name) {
   const { getAdapter } = require('./cloud/cloudSync')
   const adapter = getAdapter(provider)
 
@@ -862,8 +930,8 @@ function mergeImport(db, projectId, data) {
             continue
           }
 
-          const r = db.prepare('INSERT INTO reviews (media_file_id, reviewer_name, reviewer_uuid, status, notes, created_at, submitted_at) VALUES (?,?,?,?,?,?,?)')
-            .run(localMedia.id, rev.reviewer_name, rev.reviewer_uuid || null, rev.status, rev.notes || '', rev.created_at, rev.submitted_at)
+          const r = db.prepare('INSERT INTO reviews (media_file_id, reviewer_name, reviewer_uuid, review_sync_id, status, notes, created_at, submitted_at) VALUES (?,?,?,?,?,?,?,?)')
+            .run(localMedia.id, rev.reviewer_name, rev.reviewer_uuid || null, rev.review_sync_id || crypto.randomUUID(), rev.status, rev.notes || '', rev.created_at, rev.submitted_at)
           insertTimestamps(r.lastInsertRowid)
           insertFormResponses(r.lastInsertRowid)
           reviewsImported++
@@ -878,6 +946,15 @@ function mergeImport(db, projectId, data) {
 function getLastSyncAt(projectId) { return lastSyncAt[projectId] || null }
 function markSynced(projectId) { lastSyncAt[projectId] = Date.now() }
 
+// Cancel any pending debounce + queued rerun for a project (e.g. on delete) so we
+// don't write sync files for a project that no longer exists.
+function cancelSync(projectId) {
+  if (timers[projectId]) { clearTimeout(timers[projectId]); delete timers[projectId] }
+  delete syncQueued[projectId]
+  delete syncing[projectId]
+  delete lastSyncAt[projectId]
+}
+
 module.exports = {
   safeJsonParse,
   scheduleSync, scheduleSyncForReview,
@@ -889,6 +966,6 @@ module.exports = {
   syncConfigLocal, syncConfigCloud,
   buildManifest, readLocalManifest,
   doLocalSync, doCloudSync,
-  getLastSyncAt, markSynced,
+  getLastSyncAt, markSynced, cancelSync,
   setMainWindow,
 }
