@@ -35,7 +35,6 @@ Click **[Releases](https://github.com/n232not/sdmo-app/releases)** on the right 
 ## Updating the App
 
 SDMo checks GitHub Releases for newer versions. When an update is available, you will be notified in the app. On Windows, you will have an option to autoupdate within the app. On Mac, you will have to go to the github releases page and reinstall the app from scratch. You can also always check the current version of the app and if a newer version is available in the about tab in settings.
----
 
 ## What SDMo Does
 
