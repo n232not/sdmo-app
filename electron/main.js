@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, protocol, dialog } = require('electron')
+const { app, BrowserWindow, ipcMain, protocol, dialog, Menu } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const { validateIpcArgs } = require('./ipc/contracts')
@@ -94,6 +94,7 @@ function createWindow() {
     height: 900,
     minWidth: 900,
     minHeight: 600,
+    autoHideMenuBar: true,
     backgroundColor: '#ffffff',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -123,6 +124,7 @@ try {
 
 app.whenReady().then(() => {
   try { require('./diagnostics').setupFileLogging() } catch (_) {}
+  if (process.platform !== 'darwin') Menu.setApplicationMenu(null)
 
   protocol.registerFileProtocol('localfile', (request, callback) => {
     const filePath = decodeURIComponent(request.url.replace('localfile://', ''))
@@ -193,6 +195,7 @@ ipcMain.handle('window:openWorkspace', (_, url) => {
     minWidth: 560,
     minHeight: 500,
     title: 'SDMo — Workspace',
+    autoHideMenuBar: true,
     backgroundColor: '#ffffff',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),

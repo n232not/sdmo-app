@@ -67,6 +67,33 @@ function hydrateWorkspaceSnapshot(snapshot) {
   }
 }
 
+function tagOptionValue(tag) {
+  if (tag?.id != null) return `id:${tag.id}`
+  return tag?.label ? `label:${tag.label}` : ''
+}
+
+function findTag(tags, value) {
+  if (!value) return null
+  const raw = String(value)
+  if (raw.startsWith('id:')) {
+    const id = raw.slice(3)
+    return tags.find(t => String(t.id) === id) || null
+  }
+  if (raw.startsWith('label:')) {
+    const label = raw.slice(6)
+    return tags.find(t => t.label === label) || null
+  }
+  return tags.find(t => String(t.id) === raw || t.label === raw) || null
+}
+
+function findTimestampTag(tags, ts) {
+  if (ts?.tag_id != null) {
+    const byId = tags.find(t => String(t.id) === String(ts.tag_id))
+    if (byId) return byId
+  }
+  return ts?.tag_label ? tags.find(t => t.label === ts.tag_label) || null : null
+}
+
 export default function ReviewPage() {
   const { reviewId } = useParams()
   const navigate = useNavigate()
@@ -346,7 +373,9 @@ export default function ReviewPage() {
 
   async function updateTimestamp(id, changes) {
     if ('tag_id' in changes) {
-      const tag = tags.find(t => t.id == changes.tag_id)
+      const tag = changes.tag_id != null
+        ? tags.find(t => t.id == changes.tag_id)
+        : (changes.tag_label ? tags.find(t => t.label === changes.tag_label) : null)
       changes.tag_color = tag?.color || null
     }
     await api.updateTimestamp(id, changes)
@@ -839,8 +868,8 @@ function TimestampMarkers({ timestamps, duration, tags, onSeek, visible }) {
       }}
     >
       {timestamps.map(ts => {
-        const tag = tags.find(t => t.id === ts.tag_id)
-        const color = tag?.color || '#9ca3af'
+        const tag = findTimestampTag(tags, ts)
+        const color = tag?.color || ts.tag_color || '#9ca3af'
         const pct = Math.min(100, Math.max(0, (ts.time_seconds / duration) * 100))
         return (
           <div
@@ -870,8 +899,8 @@ function TimestampMarkers({ timestamps, duration, tags, onSeek, visible }) {
 
 function TimestampBubble({ ts, tags, onSeek, onChange, onDelete, readOnly }) {
   const [expanded, setExpanded] = useState(true)
-  const tag = tags.find(t => t.id === ts.tag_id)
-  const tagColor = tag?.color || null
+  const tag = findTimestampTag(tags, ts)
+  const tagColor = tag?.color || ts.tag_color || null
 
   return (
     <div style={{
@@ -914,17 +943,21 @@ function TimestampBubble({ ts, tags, onSeek, onChange, onDelete, readOnly }) {
         <div style={{ padding: '0 10px 10px', display: 'flex', flexDirection: 'column', gap: 6 }}>
           {tags.length > 0 && (
             <select
-              value={ts.tag_id || ''}
+              value={tag ? tagOptionValue(tag) : ''}
               disabled={readOnly}
               onChange={e => {
-                const tag = tags.find(t => t.id == e.target.value)
-                onChange({ tag_id: tag?.id || null, tag_label: tag?.label || null, tag_color: tag?.color || null })
+                const selectedTag = findTag(tags, e.target.value)
+                onChange({
+                  tag_id: selectedTag?.id || null,
+                  tag_label: selectedTag?.label || null,
+                  tag_color: selectedTag?.color || null,
+                })
               }}
               style={{ fontSize: 12, padding: '3px 6px', height: 28 }}
             >
               <option value="">No tag</option>
               {tags.map(t => (
-                <option key={t.id} value={t.id}>{t.label}</option>
+                <option key={tagOptionValue(t)} value={tagOptionValue(t)}>{t.label}</option>
               ))}
             </select>
           )}

@@ -654,6 +654,14 @@ function TimestampSelectInput({ timestamps, value, onChange, readOnly, compact =
     )
   })
 
+  function timestampSelectionKey(ts) {
+    if (!ts || typeof ts !== 'object') return ''
+    if (ts.id != null) return `id:${ts.id}`
+    return `${ts.time_seconds ?? ''}:${ts.tag_label || ''}`
+  }
+
+  const selectedKey = timestampSelectionKey(value)
+
   return (
     <div ref={ref} style={{ position: 'relative' }}>
       <button
@@ -715,7 +723,7 @@ function TimestampSelectInput({ timestamps, value, onChange, readOnly, compact =
                 {timestamps.length === 0 ? 'No timestamps logged yet' : 'No timestamps match'}
               </div>
             ) : filtered.map(ts => {
-              const isSelected = value && typeof value === 'object' && value.time_seconds === ts.time_seconds
+              const isSelected = selectedKey && selectedKey === timestampSelectionKey(ts)
               return (
                 <button
                   key={ts.id != null ? ts.id : ts.time_seconds}
@@ -728,7 +736,14 @@ function TimestampSelectInput({ timestamps, value, onChange, readOnly, compact =
                     display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap',
                   }}
                   onClick={() => {
-                    onChange({ time_seconds: ts.time_seconds, tag_label: ts.tag_label || null })
+                    onChange({
+                      id: ts.id ?? null,
+                      time_seconds: ts.time_seconds,
+                      tag_id: ts.tag_id ?? null,
+                      tag_label: ts.tag_label || null,
+                      tag_color: ts.tag_color || null,
+                      notes: ts.notes || '',
+                    })
                     setOpen(false)
                     setSearch('')
                   }}

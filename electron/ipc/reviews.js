@@ -130,12 +130,12 @@ module.exports = function (ipcMain) {
     const db = getDb()
     let resultId
     if (data.id) {
-      db.prepare('UPDATE timestamps SET time_seconds=?, tag_id=?, tag_label=?, notes=? WHERE id=?')
-        .run(data.time_seconds, data.tag_id || null, data.tag_label || null, data.notes || '', data.id)
+      db.prepare('UPDATE timestamps SET time_seconds=?, tag_id=?, tag_label=?, tag_color=?, notes=? WHERE id=?')
+        .run(data.time_seconds, data.tag_id || null, data.tag_label || null, data.tag_color || null, data.notes || '', data.id)
       resultId = data.id
     } else {
-      const r = db.prepare('INSERT INTO timestamps (review_id, time_seconds, tag_id, tag_label, notes) VALUES (?,?,?,?,?)')
-        .run(reviewId, data.time_seconds, data.tag_id || null, data.tag_label || null, data.notes || '')
+      const r = db.prepare('INSERT INTO timestamps (review_id, time_seconds, tag_id, tag_label, tag_color, notes) VALUES (?,?,?,?,?,?)')
+        .run(reviewId, data.time_seconds, data.tag_id || null, data.tag_label || null, data.tag_color || null, data.notes || '')
       resultId = r.lastInsertRowid
     }
     scheduleSyncForReview(reviewId)
@@ -144,10 +144,17 @@ module.exports = function (ipcMain) {
 
   ipcMain.handle('reviews:updateTimestamp', (_, id, data) => {
     const db = getDb()
-    db.prepare('UPDATE timestamps SET tag_id=?, tag_label=?, notes=? WHERE id=?')
-      .run(data.tag_id || null, data.tag_label || null, data.notes || '', id)
-    const ts = db.prepare('SELECT review_id FROM timestamps WHERE id=?').get(id)
-    if (ts) scheduleSyncForReview(ts.review_id)
+    const current = db.prepare('SELECT review_id, tag_id, tag_label, tag_color, notes FROM timestamps WHERE id=?').get(id)
+    if (!current) return false
+    db.prepare('UPDATE timestamps SET tag_id=?, tag_label=?, tag_color=?, notes=? WHERE id=?')
+      .run(
+        Object.prototype.hasOwnProperty.call(data, 'tag_id') ? data.tag_id || null : current.tag_id,
+        Object.prototype.hasOwnProperty.call(data, 'tag_label') ? data.tag_label || null : current.tag_label,
+        Object.prototype.hasOwnProperty.call(data, 'tag_color') ? data.tag_color || null : current.tag_color,
+        Object.prototype.hasOwnProperty.call(data, 'notes') ? data.notes || '' : current.notes || '',
+        id
+      )
+    scheduleSyncForReview(current.review_id)
     return true
   })
 

@@ -25,6 +25,7 @@ const electronMock = {
   ipcMain: { handle() {}, on() {} },
   shell: { openExternal() {} },
   BrowserWindow: class { constructor() {} },
+  Menu: { setApplicationMenu() {} },
   protocol: { registerFileProtocol() {}, registerSchemesAsPrivileged() {} },
   contextBridge: { exposeInMainWorld() {} },
   ipcRenderer: { invoke() {}, on() {}, removeListener() {} },
