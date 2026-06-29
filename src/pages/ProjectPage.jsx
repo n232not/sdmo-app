@@ -190,22 +190,21 @@ export default function ProjectPage() {
 
   async function load() {
     setLoading(true)
-    // Refresh structure from cloud before loading (cloud is authoritative for structure)
-    try { await api.fetchProjectStructure(projectId) } catch {}
-    const [proj, encs, types, status, health] = await Promise.all([
+    const [proj, encs, types, status, name] = await Promise.all([
       api.getProject(projectId),
       api.listEncounters(projectId),
       api.listMediaTypes(projectId),
       api.getSyncStatus(projectId),
-      api.mediaHealthCheck(projectId),
+      api.getProjectName(projectId),
     ])
     setProject(proj)
     setEncounters(encs)
     setMediaTypes(types)
     setSyncStatus(status)
-    setMediaHealth(health)
-    const name = await api.getProjectName(projectId)
     setReviewerName(name || '')
+    setLoading(false)
+    refreshMediaHealth()
+    refreshProjectStructure()
     // Auto-sync on open if sync is configured
     if (status.syncMode === 'local' || status.syncMode === 'cloud') {
       const syncFn = status.syncMode === 'cloud'
@@ -213,7 +212,24 @@ export default function ProjectPage() {
         : () => api.syncNow(projectId)
       syncFn().then(() => api.getSyncStatus(projectId).then(setSyncStatus))
     }
-    setLoading(false)
+  }
+
+  async function refreshMediaHealth() {
+    try {
+      setMediaHealth(await api.mediaHealthCheck(projectId))
+    } catch {}
+  }
+
+  async function refreshProjectStructure() {
+    try {
+      await api.fetchProjectStructure(projectId)
+      const [encs, types] = await Promise.all([
+        api.listEncounters(projectId),
+        api.listMediaTypes(projectId),
+      ])
+      setEncounters(encs)
+      setMediaTypes(types)
+    } catch {}
   }
 
   async function handleSaveReviewerName() {

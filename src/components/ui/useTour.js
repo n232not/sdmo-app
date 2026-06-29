@@ -2,12 +2,12 @@ import { useState, useEffect, useCallback, createElement } from 'react'
 import TutorialBubble from './TutorialBubble'
 
 // Reusable coach-mark tour runner. Renders the active TutorialBubble and handles
-// first-visit auto-start (gated on `ready` so anchor elements exist), Next/Skip,
-// and persisting "seen" state in localStorage under `storageKey`.
+// optional first-visit auto-start (gated on `ready` so anchor elements exist),
+// Next/Skip, and persisting "seen" state in localStorage under `storageKey`.
 //
-//   const tour = useTour(STEPS, 'sdmo_tour_project_v1', { ready: !loading })
+//   const tour = useTour(STEPS, 'sdmo_tour_project_v1', { ready: !loading, autoStart: true })
 //   ... <button onClick={tour.start}>?</button> ... {tour.node}
-export default function useTour(steps, storageKey, { ready = true, delay = 500, onStart, onComplete, onSkip } = {}) {
+export default function useTour(steps, storageKey, { ready = true, delay = 500, autoStart = false, onStart, onComplete, onSkip } = {}) {
   const [step, setStep] = useState(null)
   const [autoFired, setAutoFired] = useState(false)
 
@@ -30,11 +30,11 @@ export default function useTour(steps, storageKey, { ready = true, delay = 500, 
   }, [steps])
 
   useEffect(() => {
-    if (autoFired || !ready || !storageKey) return
+    if (!autoStart || autoFired || !ready || !storageKey) return
     if (localStorage.getItem(storageKey)) { setAutoFired(true); return }
     const t = setTimeout(() => { onStart?.(); setStep(resolve(0)); setAutoFired(true) }, delay)
     return () => clearTimeout(t)
-  }, [ready, autoFired, storageKey, delay, resolve, onStart])
+  }, [autoStart, ready, autoFired, storageKey, delay, resolve, onStart])
 
   const start = useCallback(() => { onStart?.(); setAutoFired(true); setTimeout(() => setStep(resolve(0)), 0) }, [resolve, onStart])
 
