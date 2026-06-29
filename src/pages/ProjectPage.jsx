@@ -69,6 +69,7 @@ const MEDIA_ICONS = { video: Video, document: FileText, other: File }
 
 const COLORS = ['#6366f1','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#f97316']
 function colorFor(name) { let h = 0; for (const c of (name || '')) h = (h * 31 + c.charCodeAt(0)) & 0xffff; return COLORS[h % COLORS.length] }
+function sampleProjectTourKey(projectId) { return `sdmo_sample_project_tour_started_v1:${projectId}` }
 
 export default function ProjectPage() {
   const { projectId } = useParams()
@@ -121,9 +122,15 @@ export default function ProjectPage() {
 
   useEffect(() => {
     if (!isSampleTour || sampleTourStarted || loading || encounters.length === 0) return
+    const key = sampleProjectTourKey(projectId)
+    if (localStorage.getItem(key)) {
+      setSampleTourStarted(true)
+      return
+    }
+    localStorage.setItem(key, '1')
     setSampleTourStarted(true)
     tour.start()
-  }, [isSampleTour, sampleTourStarted, loading, encounters.length, tour])
+  }, [isSampleTour, sampleTourStarted, loading, encounters.length, projectId, tour])
 
   // Periodic refresh every 15s — checks manifest.json first (tiny file),
   // only downloads full config if version changed

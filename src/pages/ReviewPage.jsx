@@ -3,7 +3,7 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import {
   ChevronLeft, Plus, Maximize2, Minimize2,
   Clock, Trash2, ChevronDown, ChevronUp, CheckCircle2, Maximize, Edit2, AlertCircle,
-  Columns2, Rows2, ExternalLink, HelpCircle,
+  Columns2, Rows2, ExternalLink, HelpCircle, Play, Pause, Volume2, VolumeX,
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -94,14 +94,19 @@ function findTimestampTag(tags, ts) {
   return ts?.tag_label ? tags.find(t => t.label === ts.tag_label) || null : null
 }
 
+function sampleReviewTourKey(reviewId) { return `sdmo_sample_review_tour_started_v1:${reviewId}` }
+
 export default function ReviewPage() {
   const { reviewId } = useParams()
   const navigate = useNavigate()
   const location = useLocation()
   const videoRef = useRef(null)
   const [videoDuration, setVideoDuration] = useState(0)
+  const [videoCurrentTime, setVideoCurrentTime] = useState(0)
   const [videoHovered, setVideoHovered] = useState(false)
+  const [videoControlsFocused, setVideoControlsFocused] = useState(false)
   const [videoPaused, setVideoPaused] = useState(true)
+  const [videoMuted, setVideoMuted] = useState(false)
 
   const [review, setReview] = useState(null)
   const [mediaFile, setMediaFile] = useState(null)
@@ -150,9 +155,15 @@ export default function ReviewPage() {
 
   useEffect(() => {
     if (!isSampleTour || sampleTourStarted || loading || !videoUrl) return
+    const key = sampleReviewTourKey(reviewId)
+    if (localStorage.getItem(key)) {
+      setSampleTourStarted(true)
+      return
+    }
+    localStorage.setItem(key, '1')
     setSampleTourStarted(true)
     tour.start()
-  }, [isSampleTour, sampleTourStarted, loading, videoUrl, tour])
+  }, [isSampleTour, sampleTourStarted, loading, videoUrl, reviewId, tour])
 
   useEffect(() => {
     if (!pendingSyncBasicsTour || loading || workspaceTabs.length === 0) return
@@ -234,6 +245,19 @@ export default function ReviewPage() {
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [submitted, keybinds, tags])
+
+  // Spacebar play/pause
+  useEffect(() => {
+    function onKeyDown(e) {
+      if (e.key !== ' ') return
+      const tag = e.target.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'BUTTON') return
+      e.preventDefault()
+      toggleVideoPlayback()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
 
   async function load() {
     setLoading(true)
@@ -435,11 +459,38 @@ export default function ReviewPage() {
     api.notifyReviewUpdate(reviewId).catch(() => {})
   }
 
-  function seekTo(sec) {
+  function seekTo(sec, { pause = false } = {}) {
     if (videoRef.current) {
       videoRef.current.currentTime = sec
-      videoRef.current.play()
+      setVideoCurrentTime(sec)
+      if (pause) {
+        videoRef.current.pause()
+        setVideoPaused(true)
+      } else {
+        videoRef.current.play()
+      }
     }
+  }
+
+  function setVideoTime(sec) {
+    if (!videoRef.current) return
+    const next = Math.min(videoDuration || sec, Math.max(0, sec))
+    videoRef.current.currentTime = next
+    setVideoCurrentTime(next)
+  }
+
+  function toggleVideoPlayback() {
+    const video = videoRef.current
+    if (!video) return
+    if (video.paused) video.play()
+    else video.pause()
+  }
+
+  function toggleVideoMute() {
+    const video = videoRef.current
+    if (!video) return
+    video.muted = !video.muted
+    setVideoMuted(video.muted)
   }
 
   const isVideo = mediaFile?.file_type === 'video'
@@ -571,11 +622,14 @@ export default function ReviewPage() {
                 <video
                   ref={videoRef}
                   src={videoUrl}
-                  controls
-                  style={{ width: '100%', height: '100%', display: 'block', objectFit: 'contain' }}
-                  onLoadedMetadata={e => setVideoDuration(e.target.duration)}
+                  controls={false}
+                  onClick={toggleVideoPlayback}
+                  style={{ width: '100%', height: '100%', display: 'block', objectFit: 'contain', cursor: 'pointer' }}
+                  onLoadedMetadata={e => { setVideoDuration(e.target.duration); setVideoCurrentTime(e.target.currentTime || 0); setVideoMuted(e.target.muted) }}
+                  onTimeUpdate={e => setVideoCurrentTime(e.target.currentTime)}
                   onPlay={() => setVideoPaused(false)}
                   onPause={() => setVideoPaused(true)}
+                  onVolumeChange={e => setVideoMuted(e.target.muted)}
                   onError={() => setVideoError('This file could not be played. It may use a codec Electron cannot decode, or the file may be damaged.')}
                 />
               ) : (
@@ -592,26 +646,23 @@ export default function ReviewPage() {
                 </div>
               )}
 
-              {/* YouTube-style timestamp markers on the progress bar */}
-              {isVideo && videoDuration > 0 && timestamps.length > 0 && (
-                <TimestampMarkers
+              {isVideo && videoDuration > 0 && (
+                <VideoControls
                   timestamps={timestamps}
                   duration={videoDuration}
+                  currentTime={videoCurrentTime}
+                  paused={videoPaused}
+                  muted={videoMuted}
                   tags={tags}
-                  onSeek={seekTo}
-                  visible={videoHovered || videoPaused}
+                  visible={videoHovered || videoPaused || videoControlsFocused}
+                  onTogglePlay={toggleVideoPlayback}
+                  onSeek={setVideoTime}
+                  onMarkerSeek={(sec) => seekTo(sec, { pause: true })}
+                  onToggleMute={toggleVideoMute}
+                  isFullscreen={isFullscreen}
+                  onToggleFullscreen={toggleFullscreen}
+                  onFocusChange={setVideoControlsFocused}
                 />
-              )}
-
-              {isVideo && (
-                <button
-                  className="btn btn-icon btn-sm"
-                  style={{ position: 'absolute', top: 8, right: 8, background: 'rgba(0,0,0,0.55)', color: '#fff', border: 'none' }}
-                  onClick={toggleFullscreen}
-                  title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
-                >
-                  {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
-                </button>
               )}
             </div>
 
@@ -850,117 +901,274 @@ export default function ReviewPage() {
   )
 }
 
-// YouTube-style markers on the native video progress bar
-// The Chromium controls bar is ~40px tall; the timeline track sits at about bottom 28px
-function TimestampMarkers({ timestamps, duration, tags, onSeek, visible }) {
+function VideoControls({
+  timestamps,
+  duration,
+  currentTime,
+  paused,
+  muted,
+  tags,
+  visible,
+  onTogglePlay,
+  onSeek,
+  onMarkerSeek,
+  onToggleMute,
+  isFullscreen,
+  onToggleFullscreen,
+  onFocusChange,
+}) {
+  const trackRef = useRef(null)
+  const progressPct = duration > 0 ? Math.min(100, Math.max(0, (currentTime / duration) * 100)) : 0
+
+  function seekFromPointer(e) {
+    const rect = trackRef.current?.getBoundingClientRect()
+    if (!rect || rect.width <= 0) return
+    const pct = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width))
+    onSeek(pct * duration)
+  }
+
   return (
     <div
-      className="timestamp-markers"
+      onFocusCapture={() => onFocusChange(true)}
+      onBlurCapture={e => {
+        if (!e.currentTarget.contains(e.relatedTarget)) onFocusChange(false)
+      }}
       style={{
         position: 'absolute',
-        bottom: 12,
         left: 0,
         right: 0,
-        height: 20,
-        pointerEvents: 'none',
+        bottom: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 4,
+        padding: '28px 12px 8px',
+        background: 'linear-gradient(to top, rgba(0,0,0,0.82) 0%, rgba(0,0,0,0.44) 55%, rgba(0,0,0,0) 100%)',
+        color: '#fff',
+        pointerEvents: visible ? 'auto' : 'none',
         opacity: visible ? 1 : 0,
-        transition: 'opacity 0.2s',
+        transform: visible ? 'translateY(0)' : 'translateY(8px)',
+        transition: 'opacity 0.15s ease, transform 0.15s ease',
+        zIndex: 12,
       }}
     >
-      {timestamps.map(ts => {
-        const tag = findTimestampTag(tags, ts)
-        const color = tag?.color || ts.tag_color || '#9ca3af'
-        const pct = Math.min(100, Math.max(0, (ts.time_seconds / duration) * 100))
-        return (
-          <div
-            key={ts.id}
-            title={`${formatTime(ts.time_seconds)}${ts.tag_label ? ' — ' + ts.tag_label : ''}`}
-            style={{
-              position: 'absolute',
-              left: `${pct}%`,
-              bottom: 0,
-              transform: 'translateX(-50%)',
-              width: 5,
-              height: 20,
-              background: color,
-              borderRadius: '0px 0px 0 0',
-              pointerEvents: 'auto',
-              cursor: 'pointer',
-              zIndex: 10,
-              boxShadow: '0 0 0 0px rgba(0,0,0,0.5)',
-            }}
-            onClick={() => onSeek(ts.time_seconds)}
-          />
-        )
-      })}
+      {/* Seek track */}
+      <div
+        ref={trackRef}
+        role="slider"
+        aria-label="Video timeline"
+        aria-valuemin={0}
+        aria-valuemax={Math.floor(duration)}
+        aria-valuenow={Math.floor(currentTime)}
+        tabIndex={0}
+        onMouseDown={seekFromPointer}
+        onKeyDown={e => {
+          if (e.key === 'ArrowLeft') { e.preventDefault(); onSeek(Math.max(0, currentTime - 5)) }
+          if (e.key === 'ArrowRight') { e.preventDefault(); onSeek(Math.min(duration, currentTime + 5)) }
+          if (e.key === 'Home') { e.preventDefault(); onSeek(0) }
+          if (e.key === 'End') { e.preventDefault(); onSeek(duration) }
+        }}
+        style={{
+          position: 'relative',
+          width: '100%',
+          height: 16,
+          display: 'flex',
+          alignItems: 'center',
+          cursor: 'pointer',
+          outline: 'none',
+        }}
+      >
+        {/* Track background + fill */}
+        <div style={{
+          position: 'absolute',
+          left: 0,
+          right: 0,
+          top: '50%',
+          height: 3,
+          transform: 'translateY(-50%)',
+          borderRadius: 99,
+          background: 'rgba(255,255,255,0.22)',
+        }}>
+          <div style={{ width: `${progressPct}%`, height: '100%', borderRadius: 99, background: '#fff' }} />
+        </div>
+        {/* Timestamp markers */}
+        {timestamps.map(ts => {
+          const tag = findTimestampTag(tags, ts)
+          const color = tag?.color || ts.tag_color || '#9ca3af'
+          const pct = Math.min(100, Math.max(0, (ts.time_seconds / duration) * 100))
+          return (
+            <button
+              type="button"
+              key={ts.id}
+              title={`${formatTime(ts.time_seconds)}${ts.tag_label ? ' — ' + ts.tag_label : ''}`}
+              style={{
+                position: 'absolute',
+                left: `${pct}%`,
+                top: '50%',
+                transform: 'translate(-50%, -50%)',
+                width: 10,
+                height: 17,
+                background: 'transparent',
+                border: 'none',
+                padding: 0,
+                pointerEvents: 'auto',
+                cursor: 'pointer',
+                zIndex: 4,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+              onMouseDown={e => e.stopPropagation()}
+              onClick={e => { e.stopPropagation(); onMarkerSeek(ts.time_seconds) }}
+            >
+              <span style={{
+                width: 3,
+                height: 17,
+                borderRadius: 99,
+                background: color,
+              }} />
+            </button>
+          )
+        })}
+        {/* Scrub handle */}
+        <div style={{
+          position: 'absolute',
+          left: `${progressPct}%`,
+          top: '50%',
+          transform: 'translate(-50%, -50%)',
+          width: 10,
+          height: 10,
+          borderRadius: '50%',
+          background: '#fff',
+          boxShadow: '0 1px 4px rgba(0,0,0,0.5)',
+          pointerEvents: 'none',
+          zIndex: 5,
+        }} />
+      </div>
+      {/* Controls row */}
+      <div style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 4 }}>
+        <button type="button" className="video-ctrl-btn" onClick={onTogglePlay} title={paused ? 'Play' : 'Pause'}>
+          {paused ? <Play size={15} fill="currentColor" /> : <Pause size={15} fill="currentColor" />}
+        </button>
+        <button type="button" className="video-ctrl-btn" onClick={onToggleMute} title={muted ? 'Unmute' : 'Mute'}>
+          {muted ? <VolumeX size={14} /> : <Volume2 size={14} />}
+        </button>
+        <span style={{ fontVariantNumeric: 'tabular-nums', fontSize: 11.5, minWidth: 86, color: 'rgba(255,255,255,0.82)', textShadow: '0 1px 2px rgba(0,0,0,0.5)', marginLeft: 2 }}>
+          {formatTime(currentTime)} / {formatTime(duration)}
+        </span>
+        <div style={{ flex: 1 }} />
+        <button type="button" className="video-ctrl-btn" onClick={onToggleFullscreen} title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}>
+          {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+        </button>
+      </div>
     </div>
   )
 }
 
 function TimestampBubble({ ts, tags, onSeek, onChange, onDelete, readOnly }) {
   const [expanded, setExpanded] = useState(true)
+  const [tagMenuOpen, setTagMenuOpen] = useState(false)
+  const menuRef = useRef(null)
   const tag = findTimestampTag(tags, ts)
   const tagColor = tag?.color || ts.tag_color || null
 
+  useEffect(() => {
+    if (!tagMenuOpen) return
+    function onDown(e) {
+      if (menuRef.current && !menuRef.current.contains(e.target)) setTagMenuOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [tagMenuOpen])
+
   return (
     <div style={{
-      background: 'var(--bg-secondary)', border: '1px solid',
-      borderColor: tagColor ? tagColor + '55' : 'var(--border)',
-      borderRadius: 8, overflow: 'hidden', flexShrink: 0,
-      borderLeft: tagColor ? `3px solid ${tagColor}` : undefined,
+      background: 'var(--bg)',
+      border: '1px solid var(--border)',
+      borderLeft: tagColor ? `3px solid ${tagColor}` : '1px solid var(--border)',
+      borderRadius: 'var(--radius-lg)',
+      overflow: 'visible',
+      flexShrink: 0,
+      boxShadow: 'var(--shadow-sm)',
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '7px 10px', cursor: 'pointer' }} onClick={() => setExpanded(e => !e)}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      {/* Header row */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 8px 7px 10px' }}>
+        <button
+          className="btn btn-ghost btn-icon btn-sm"
+          style={{ padding: '2px 4px', color: 'var(--accent)', fontFamily: 'monospace', fontSize: 12, fontWeight: 700, flexShrink: 0 }}
+          onClick={e => { e.stopPropagation(); onSeek() }}
+          title="Seek to timestamp"
+        >
+          {formatTime(ts.time_seconds)}
+        </button>
+
+        {/* Tag pill dropdown */}
+        {tags.length > 0 && (
+          <div ref={menuRef} style={{ position: 'relative', minWidth: 0 }}>
+            <button
+              disabled={readOnly}
+              onClick={() => setTagMenuOpen(o => !o)}
+              style={{
+                fontSize: 11, fontWeight: 500, padding: '2px 8px', borderRadius: 99,
+                background: tagColor ? tagColor + '1a' : 'var(--bg-active)',
+                color: tagColor || 'var(--text-secondary)',
+                border: `1px solid ${tagColor ? tagColor + '44' : 'var(--border)'}`,
+                cursor: readOnly ? 'default' : 'pointer',
+                fontFamily: 'var(--font)', lineHeight: 1.6, whiteSpace: 'nowrap',
+                transition: 'background 0.1s',
+              }}
+            >
+              {tag?.label || 'No tag'}
+            </button>
+            {tagMenuOpen && (
+              <div style={{
+                position: 'absolute', top: 'calc(100% + 4px)', left: 0, zIndex: 200,
+                background: 'var(--bg)', border: '1px solid var(--border)',
+                borderRadius: 'var(--radius-lg)', boxShadow: 'var(--shadow)',
+                minWidth: 150, overflow: 'hidden',
+              }}>
+                <button
+                  className="dropdown-item"
+                  onClick={() => { onChange({ tag_id: null, tag_label: null, tag_color: null }); setTagMenuOpen(false) }}
+                >
+                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--border-strong)', flexShrink: 0 }} />
+                  No tag
+                </button>
+                {tags.map(t => (
+                  <button
+                    key={tagOptionValue(t)}
+                    className="dropdown-item"
+                    onClick={() => { onChange({ tag_id: t.id, tag_label: t.label, tag_color: t.color || null }); setTagMenuOpen(false) }}
+                  >
+                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: t.color || '#9ca3af', flexShrink: 0 }} />
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        <div style={{ flex: 1 }} />
+
+        {!readOnly && (
           <button
             className="btn btn-ghost btn-icon btn-sm"
-            style={{ padding: 2, color: 'var(--accent)', fontFamily: 'monospace', fontSize: 12, fontWeight: 700 }}
-            onClick={e => { e.stopPropagation(); onSeek() }}
-            title="Seek to timestamp"
+            onClick={e => { e.stopPropagation(); onDelete() }}
+            title="Delete"
           >
-            {formatTime(ts.time_seconds)}
+            <Trash2 size={11} />
           </button>
-          {ts.tag_label && (
-            <span style={{
-              fontSize: 10, fontWeight: 500, padding: '1px 6px', borderRadius: 99,
-              background: (tagColor || '#9ca3af') + '22', color: tagColor || 'var(--accent)',
-              border: `1px solid ${(tagColor || '#9ca3af')}55`,
-            }}>
-              {ts.tag_label}
-            </span>
-          )}
-        </div>
-        <div style={{ display: 'flex', gap: 2 }}>
-          {!readOnly && (
-            <button className="btn btn-ghost btn-icon btn-sm" onClick={e => { e.stopPropagation(); onDelete() }}>
-              <Trash2 size={11} />
-            </button>
-          )}
-          <ChevronDown size={12} color="var(--text-muted)" style={{ transform: expanded ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 0.15s' }} />
-        </div>
+        )}
+        <button
+          onClick={() => setExpanded(e => !e)}
+          style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 2, display: 'flex', alignItems: 'center', color: 'var(--text-muted)' }}
+        >
+          <ChevronDown size={12} style={{ transform: expanded ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 0.15s' }} />
+        </button>
       </div>
 
       {expanded && (
-        <div style={{ padding: '0 10px 10px', display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {tags.length > 0 && (
-            <select
-              value={tag ? tagOptionValue(tag) : ''}
-              disabled={readOnly}
-              onChange={e => {
-                const selectedTag = findTag(tags, e.target.value)
-                onChange({
-                  tag_id: selectedTag?.id || null,
-                  tag_label: selectedTag?.label || null,
-                  tag_color: selectedTag?.color || null,
-                })
-              }}
-              style={{ fontSize: 12, padding: '3px 6px', height: 28 }}
-            >
-              <option value="">No tag</option>
-              {tags.map(t => (
-                <option key={tagOptionValue(t)} value={tagOptionValue(t)}>{t.label}</option>
-              ))}
-            </select>
-          )}
+        <div style={{ padding: '0 10px 10px' }}>
           <textarea
             placeholder="Notes…"
             value={ts.notes || ''}
