@@ -15,7 +15,7 @@ const FILES_TOUR_STEPS = [
     targetId: 'tut-files-base',
     placement: 'bottom',
     title: 'Why Linking Is Needed',
-    body: "SDMo stores the project structure (encounters, media slots, reviews) in the cloud — but your actual video files stay on your own computer, never uploaded. Since file paths are device-specific, everyone on the team links their own local copies here. Set your base folder to get started.",
+    body: "SDMo syncs the project structure, settings, and reviews, but not media files. File paths are device-specific, so every teammate links their own local copy here. Set your base folder to get started.",
   },
   {
     targetId: 'tut-files-autolink',
@@ -27,7 +27,7 @@ const FILES_TOUR_STEPS = [
     targetId: 'tut-files-status',
     placement: 'top',
     title: 'Manual Linking',
-    body: "See every media file and its link status on this machine. If Auto-link missed a file, use Link / Locate to browse to it manually. Mark N/A for files you intentionally don't have (they'll be skipped in your export).",
+    body: "See every media file and its link status on this machine. If Auto-link missed a file, use Link / Locate to browse to it manually. These links do not sync, which keeps teammates' different folder paths from overwriting each other.",
   },
 ]
 

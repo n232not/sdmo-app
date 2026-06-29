@@ -12,19 +12,19 @@ const TUTORIAL_STEPS = [
     targetId: 'tut-name',
     placement: 'bottom',
     title: 'Your Reviewer Name',
-    body: 'This name is attached to every review you submit. Always use the same name on every device, spelled exactly the same way — reviews are matched by name when syncing.',
+    body: 'This name is attached to every review you create. Use the same name on every device, spelled the same way, so synced reviews stay grouped under the right person.',
   },
   {
     targetId: 'tut-import',
     placement: 'bottom',
     title: 'Joining an Existing Project',
-    body: "A colleague already set up the project? Click Import and select their .json sync file from the shared folder. You'll then point to your local media folder — video files stay on your own machine and are never uploaded.",
+    body: "A colleague already set up the project? Click Import to join from the shared sync folder or a project .json file. You'll then link your own local media files; videos stay on your machine and are never uploaded by SDMo.",
   },
   {
     targetId: 'tut-new',
     placement: 'bottom',
     title: 'Creating a New Project',
-    body: "Start fresh. After creating a project you'll be taken to Settings — open the Overview tab there for a step-by-step guide on setting up forms, media types, and your media folder.",
+    body: "Start fresh. After creating a project you'll be taken to Settings. The Overview tab walks through forms, instructions, media types, files, and sync in the order most teams set them up.",
   },
   {
     targetId: 'tut-help',
@@ -68,7 +68,8 @@ export default function HomePage() {
 
   async function handleTrySample() {
     const result = await api.createSampleProject()
-    if (result?.id) navigate(`/project/${result.id}`)
+    if (result?.id && result?.tutorialReviewId) navigate(`/project/${result.id}?sampleTour=1&sampleReviewId=${result.tutorialReviewId}`)
+    else if (result?.id) navigate(`/project/${result.id}`)
   }
 
   async function handleSaveName() {

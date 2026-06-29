@@ -26,7 +26,7 @@ const PROJECT_TOUR_STEPS = [
     targetId: 'tut-proj-encounters',
     placement: 'bottom',
     title: 'Encounters',
-    body: 'Each encounter represents one patient or session. Click any encounter card to expand it and see its media files. The project structure is synced to the cloud; the actual video files stay on your own computer.',
+    body: 'Each encounter represents one patient or session. Click any encounter card to expand it and see its media files. Sync shares the project structure and coding data; actual video files stay on each coder\'s computer.',
   },
   {
     targetId: 'tut-proj-mediatype',
@@ -44,7 +44,7 @@ const PROJECT_TOUR_STEPS = [
     targetId: 'tut-proj-health',
     placement: 'bottom',
     title: 'Unlinked Files',
-    body: "The project structure lives in the cloud — but the actual video files live on your computer. Any file SDMo can't find on this machine is flagged here. Click Fix or use the Link / Locate buttons on each file to connect them.",
+    body: "This warning is local to this machine. The sample links the first video so you can try reviewing right away; the other sample slots stay unlinked so you can practice Auto-link or manual Link without changing teammates' file paths.",
   },
   {
     targetId: 'tut-proj-autolink',
@@ -56,7 +56,7 @@ const PROJECT_TOUR_STEPS = [
     targetId: 'tut-proj-sync',
     placement: 'bottom',
     title: 'Sync',
-    body: "Sync Now pushes your reviews to the shared folder and pulls down your teammates' latest work. Each reviewer's data is a separate file, so there are no conflicts.",
+    body: "Sync Now pushes your latest reviews and setup changes, then pulls your teammates' latest work. Use Settings → Sync to choose OneDrive, Google Drive, or a shared local folder. Media files are still linked separately on each machine.",
   },
   {
     targetId: 'tut-proj-export',
@@ -102,15 +102,28 @@ export default function ProjectPage() {
   const [autolinkFolder, setAutolinkFolder] = useState('')
   const [autolinkResult, setAutolinkResult] = useState(null)
   const [syncOffline, setSyncOffline] = useState(false)
+  const [sampleTourStarted, setSampleTourStarted] = useState(false)
+  const query = new URLSearchParams(location.search)
+  const isSampleTour = query.get('sampleTour') === '1'
+  const sampleReviewId = query.get('sampleReviewId')
   const tour = useTour(PROJECT_TOUR_STEPS, 'sdmo_tour_project_v1', {
     ready: !loading && encounters.length > 0,
     onStart: useCallback(() => {
       // Expand the first encounter so media-type and add-review anchors are in the DOM.
       if (encounters[0]) setExpanded(e => ({ ...e, [encounters[0].id]: true }))
     }, [encounters]),
+    onComplete: () => {
+      if (isSampleTour && sampleReviewId) navigate(`/review/${sampleReviewId}?sampleTour=1`)
+    },
   })
 
   useEffect(() => { load() }, [projectId, location.pathname])
+
+  useEffect(() => {
+    if (!isSampleTour || sampleTourStarted || loading || encounters.length === 0) return
+    setSampleTourStarted(true)
+    tour.start()
+  }, [isSampleTour, sampleTourStarted, loading, encounters.length, tour])
 
   // Periodic refresh every 15s — checks manifest.json first (tiny file),
   // only downloads full config if version changed

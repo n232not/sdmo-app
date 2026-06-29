@@ -11,7 +11,7 @@ const mock = {
 export const api = isElectron ? window.api : {
   listProjects: async () => mock.projects,
   createProject: async (d) => { const p = { id: Date.now(), ...d, created_at: new Date().toISOString() }; mock.projects.push(p); return p },
-  createSampleProject: async () => { const p = { id: Date.now(), name: '📘 Sample Tutorial Project', created_at: new Date().toISOString() }; mock.projects.push(p); return { id: p.id, alreadyExisted: false } },
+  createSampleProject: async () => { const p = { id: Date.now(), name: '📘 Sample Tutorial Project', created_at: new Date().toISOString() }; mock.projects.push(p); return { id: p.id, tutorialReviewId: null, alreadyExisted: false } },
   getProject: async (id) => mock.projects.find(p => p.id == id) || null,
   updateProject: async () => true,
   deleteProject: async (id) => { mock.projects = mock.projects.filter(p => p.id != id); return true },

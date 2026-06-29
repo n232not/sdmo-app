@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import {
   ChevronLeft, Plus, Maximize2, Minimize2,
   Clock, Trash2, ChevronDown, ChevronUp, CheckCircle2, Maximize, Edit2, AlertCircle,
@@ -35,7 +35,16 @@ const REVIEW_TOUR_STEPS = [
     targetId: 'tut-rev-submit',
     placement: 'bottom',
     title: 'Submitting Your Review',
-    body: "Click Submit Review when you're done coding. Your work syncs to the shared folder automatically. You can reopen and edit a submitted review at any time by clicking Edit Review.",
+    body: "Click Submit Review when you're done coding. If sync is configured, SDMo will share the submitted review automatically in the background; you can still use Sync Now on the project page to pull teammates' latest work.",
+  },
+]
+
+const SYNC_BASICS_TOUR_STEPS = [
+  {
+    targetId: 'tut-rev-sync-basics',
+    placement: 'top',
+    title: 'Sync Basics',
+    body: 'This page explains what SDMo sync shares with teammates, what stays local on each computer, and the habits that prevent duplicate or missing review data.',
   },
 ]
 
@@ -61,6 +70,7 @@ function hydrateWorkspaceSnapshot(snapshot) {
 export default function ReviewPage() {
   const { reviewId } = useParams()
   const navigate = useNavigate()
+  const location = useLocation()
   const videoRef = useRef(null)
   const [videoDuration, setVideoDuration] = useState(0)
   const [videoHovered, setVideoHovered] = useState(false)
@@ -88,10 +98,19 @@ export default function ReviewPage() {
   const [videoUrl, setVideoUrl] = useState(null)
   const [videoError, setVideoError] = useState('')
   const [showSubmit, setShowSubmit] = useState(false)
+  const [sampleTourStarted, setSampleTourStarted] = useState(false)
+  const [pendingSyncBasicsTour, setPendingSyncBasicsTour] = useState(false)
   const [submitted, setSubmitted] = useState(false)
   const [loading, setLoading] = useState(true)
   const [validationErrors, setValidationErrors] = useState([])
-  const tour = useTour(REVIEW_TOUR_STEPS, 'sdmo_tour_review_v1', { ready: !loading && !!videoUrl })
+  const isSampleTour = new URLSearchParams(location.search).get('sampleTour') === '1'
+  const tour = useTour(REVIEW_TOUR_STEPS, 'sdmo_tour_review_v1', {
+    ready: !loading && !!videoUrl,
+    onComplete: () => {
+      if (isSampleTour) setPendingSyncBasicsTour(true)
+    },
+  })
+  const syncBasicsTour = useTour(SYNC_BASICS_TOUR_STEPS, null, { ready: !loading && !!videoUrl })
   const [linkModal, setLinkModal] = useState(null) // null | 'not_linked' | 'missing'
   const [linkSaving, setLinkSaving] = useState(false)
   const [encProjectId, setEncProjectId] = useState(null)
@@ -101,6 +120,26 @@ export default function ReviewPage() {
   const videoPanelRef = useRef(null)
 
   useEffect(() => { load() }, [reviewId])
+
+  useEffect(() => {
+    if (!isSampleTour || sampleTourStarted || loading || !videoUrl) return
+    setSampleTourStarted(true)
+    tour.start()
+  }, [isSampleTour, sampleTourStarted, loading, videoUrl, tour])
+
+  useEffect(() => {
+    if (!pendingSyncBasicsTour || loading || workspaceTabs.length === 0) return
+    const idx = workspaceTabs.findIndex(tab => tab.tab_type === 'instruction' && tab.label === 'Sync Basics')
+    if (idx < 0) {
+      setPendingSyncBasicsTour(false)
+      return
+    }
+    setWorkspaceExpanded(false)
+    setWorkspaceMinimized(false)
+    setActiveTab(idx)
+    setPendingSyncBasicsTour(false)
+    setTimeout(() => syncBasicsTour.start(), 100)
+  }, [pendingSyncBasicsTour, loading, workspaceTabs, syncBasicsTour])
 
   function refreshReviewData(id) {
     api.getReview(id).then(rev => {
@@ -410,16 +449,19 @@ export default function ReviewPage() {
   }
 
   const currentTab = workspaceTabs[activeTab]
+  const isSyncBasicsTab = currentTab?.tab_type === 'instruction' && currentTab?.label === 'Sync Basics'
   const workspaceContent = (
-    <WorkspaceTabContent
-      tab={currentTab}
-      formSchema={currentTab?.tab_type === 'form' ? formSchemas[currentTab?.ref_id] : null}
-      instruction={currentTab?.tab_type === 'instruction' ? instructions[currentTab?.ref_id] : null}
-      responses={currentTab?.tab_type === 'form' ? formResponses[currentTab?.ref_id] : null}
-      onSave={(resp) => saveFormResponse(currentTab.ref_id, resp)}
-      readOnly={false}
-      timestamps={timestamps}
-    />
+    <div id={isSyncBasicsTab ? 'tut-rev-sync-basics' : undefined}>
+      <WorkspaceTabContent
+        tab={currentTab}
+        formSchema={currentTab?.tab_type === 'form' ? formSchemas[currentTab?.ref_id] : null}
+        instruction={currentTab?.tab_type === 'instruction' ? instructions[currentTab?.ref_id] : null}
+        responses={currentTab?.tab_type === 'form' ? formResponses[currentTab?.ref_id] : null}
+        onSave={(resp) => saveFormResponse(currentTab.ref_id, resp)}
+        readOnly={false}
+        timestamps={timestamps}
+      />
+    </div>
   )
 
   const isHoriz = layoutMode === 'horizontal'
@@ -774,6 +816,7 @@ export default function ReviewPage() {
       </Modal>
 
       {tour.node}
+      {syncBasicsTour.node}
     </div>
   )
 }
