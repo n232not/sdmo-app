@@ -8,12 +8,8 @@ import InstructionEditor from '../components/setup/InstructionEditor'
 import Modal from '../components/ui/Modal'
 import useTour from '../components/ui/useTour'
 
-<<<<<<< Updated upstream
-const SECTIONS = ['Overview', 'Forms', 'Instructions', 'Media Types', 'Encounters', 'Files', 'Sync', 'Keybinds', 'Access', 'Versions', 'Deleted Reviews']
-=======
 const SECTIONS = ['Overview', 'Forms', 'Instructions', 'Media Types', 'Encounters', 'Files', 'Sync', 'Keybinds', 'Access', 'Versions', 'Deleted Reviews', 'About']
 const SAMPLE_PROJECT_NAME = '📘 Sample Tutorial Project'
->>>>>>> Stashed changes
 
 const FILES_TOUR_STEPS = [
   {

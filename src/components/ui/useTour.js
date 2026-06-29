@@ -7,11 +7,7 @@ import TutorialBubble from './TutorialBubble'
 //
 //   const tour = useTour(STEPS, 'sdmo_tour_project_v1', { ready: !loading })
 //   ... <button onClick={tour.start}>?</button> ... {tour.node}
-<<<<<<< Updated upstream
-export default function useTour(steps, storageKey, { ready = true, delay = 500, onStart } = {}) {
-=======
 export default function useTour(steps, storageKey, { ready = true, autoStart = true, delay = 500, onStart, onComplete, onSkip } = {}) {
->>>>>>> Stashed changes
   const [step, setStep] = useState(null)
   const [autoFired, setAutoFired] = useState(false)
 
@@ -24,7 +20,11 @@ export default function useTour(steps, storageKey, { ready = true, autoStart = t
   const resolve = useCallback((idx) => {
     for (let i = idx; i < steps.length; i++) {
       const t = steps[i]?.targetId
-      if (!t || document.getElementById(t)) return i
+      if (!t) return i
+      const el = document.getElementById(t)
+      if (!el) continue
+      const rect = el.getBoundingClientRect()
+      if (rect.width > 0 && rect.height > 0) return i
     }
     return null
   }, [steps])
@@ -36,18 +36,22 @@ export default function useTour(steps, storageKey, { ready = true, autoStart = t
     return () => clearTimeout(t)
   }, [ready, autoStart, autoFired, storageKey, delay, resolve, onStart])
 
-  const start = useCallback(() => { onStart?.(); setAutoFired(true); setStep(resolve(0)) }, [resolve, onStart])
+  const start = useCallback(() => { onStart?.(); setAutoFired(true); setTimeout(() => setStep(resolve(0)), 0) }, [resolve, onStart])
 
-  const finish = useCallback(() => { markSeen(); setStep(null) }, [markSeen])
+  const finish = useCallback(() => { markSeen(); setStep(null); onSkip?.() }, [markSeen, onSkip])
 
   const next = useCallback(() => {
     setStep(s => {
       if (s === null) return s
       const n = resolve(s + 1)
-      if (n === null) { markSeen(); return null }
+      if (n === null) {
+        markSeen()
+        setTimeout(() => onComplete?.(), 0)
+        return null
+      }
       return n
     })
-  }, [resolve, markSeen])
+  }, [resolve, markSeen, onComplete])
 
   const node = (step !== null && steps[step])
     ? createElement(TutorialBubble, { ...steps[step], step: step + 1, total: steps.length, onNext: next, onSkip: finish })

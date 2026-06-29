@@ -91,19 +91,10 @@ export default function ReviewPage() {
   const [submitted, setSubmitted] = useState(false)
   const [loading, setLoading] = useState(true)
   const [validationErrors, setValidationErrors] = useState([])
-<<<<<<< Updated upstream
-  const tour = useTour(REVIEW_TOUR_STEPS, 'sdmo_tour_review_v1', { ready: !loading && !!videoUrl })
-=======
-  const isSampleTour = new URLSearchParams(location.search).get('sampleTour') === '1'
   const tour = useTour(REVIEW_TOUR_STEPS, 'sdmo_tour_review_v1', {
     ready: !loading && !!videoUrl,
     autoStart: false,
-    onComplete: () => {
-      if (isSampleTour) setPendingSyncBasicsTour(true)
-    },
   })
-  const syncBasicsTour = useTour(SYNC_BASICS_TOUR_STEPS, null, { ready: !loading && !!videoUrl })
->>>>>>> Stashed changes
   const [linkModal, setLinkModal] = useState(null) // null | 'not_linked' | 'missing'
   const [linkSaving, setLinkSaving] = useState(false)
   const [encProjectId, setEncProjectId] = useState(null)
