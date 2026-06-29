@@ -104,6 +104,7 @@ export default function ProjectPage() {
   const [syncOffline, setSyncOffline] = useState(false)
   const tour = useTour(PROJECT_TOUR_STEPS, 'sdmo_tour_project_v1', {
     ready: !loading && encounters.length > 0,
+    autoStart: false,
     onStart: useCallback(() => {
       // Expand the first encounter so media-type and add-review anchors are in the DOM.
       if (encounters[0]) setExpanded(e => ({ ...e, [encounters[0].id]: true }))
@@ -170,8 +171,6 @@ export default function ProjectPage() {
 
   async function load() {
     setLoading(true)
-    // Refresh structure from cloud before loading (cloud is authoritative for structure)
-    try { await api.fetchProjectStructure(projectId) } catch {}
     const [proj, encs, types, status, health] = await Promise.all([
       api.getProject(projectId),
       api.listEncounters(projectId),
@@ -186,14 +185,26 @@ export default function ProjectPage() {
     setMediaHealth(health)
     const name = await api.getProjectName(projectId)
     setReviewerName(name || '')
+    setLoading(false)
+
     // Auto-sync on open if sync is configured
     if (status.syncMode === 'local' || status.syncMode === 'cloud') {
       const syncFn = status.syncMode === 'cloud'
         ? () => api.cloudSyncNow(projectId)
         : () => api.syncNow(projectId)
-      syncFn().then(() => api.getSyncStatus(projectId).then(setSyncStatus))
+      syncFn().then(async () => {
+        const [nextEncs, nextTypes, nextStatus, nextHealth] = await Promise.all([
+          api.listEncounters(projectId),
+          api.listMediaTypes(projectId),
+          api.getSyncStatus(projectId),
+          api.mediaHealthCheck(projectId),
+        ])
+        setEncounters(nextEncs)
+        setMediaTypes(nextTypes)
+        setSyncStatus(nextStatus)
+        setMediaHealth(nextHealth)
+      }).catch(() => {})
     }
-    setLoading(false)
   }
 
   async function handleSaveReviewerName() {

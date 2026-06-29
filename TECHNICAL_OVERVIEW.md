@@ -966,18 +966,24 @@ The constraints are:
 - No central server — communication is only via files in a shared folder
 - No machine should be able to accidentally overwrite another's reviews
 
-### The File Layout (protocol v2)
+### The File Layout (protocol v3)
 
-The sync system was rewritten. The old design split data across many files (`project-config.json`, a `reviews/<uuid>.json` per machine, `deleted-reviews.json`) and used a `config_version` counter to decide who won. That is **gone**. Today there is one canonical snapshot file:
+The sync system was rewritten. The oldest design split data across many independent files (`project-config.json`, a `reviews/<uuid>.json` per machine, `deleted-reviews.json`) and used a `config_version` counter to decide who won. Protocol v2 replaced that with one monolithic project snapshot. Protocol v3 keeps the stable part of that idea — one canonical index/comparison surface — but moves large payloads out of the index:
 
 ```
 sync-folder/
-  project-state.json     ← canonical snapshot: structure + ALL reviews + tombstones
+  project-state.json     ← canonical compact index: structure + entity hashes/paths + tombstones
   manifest.json          ← { protocol_version, config_version, fingerprint }
+  reviews/
+    <review_sync_id>.json
+  form-versions/
+    <form_sync_id>-vN.json
+  media-type-versions/
+    <media_type_sync_id>-vN.json
   reviews-export.xlsx     (no longer written automatically — see Part 4)
 ```
 
-`project-state.json` holds *everything*: encounters, media files, media types (with tags + workspace tabs), forms, instructions, every machine's reviews, and the tombstone lists. Both sides read it, merge it against their local database, and write the merged result back. It is the single source of truth — it is never split back into per-entity files.
+`project-state.json` holds the project structure, tombstones, and an index of split payloads with hashes. Reviews and version payloads are separate files, but they are not independent sources of truth: their hashes and paths ride in the index, and sync hydrates them back into the same per-entity merge pipeline before applying changes. Existing protocol-v2 monolithic folders are still accepted and republished as protocol v3 on the next sync.
 
 Each machine still has a UUID (`user_uuid` in `app-settings.json`, created once on first launch). But a machine no longer "owns" a file — every machine publishes the full merged state whenever its local content differs from the folder. There is no `isOwner` / owner-gating anymore; the old concept was removed.
 
@@ -985,7 +991,7 @@ Each machine still has a UUID (`user_uuid` in `app-settings.json`, created once 
 
 Sync is **bidirectional** and merges **per entity**, not per file. Two ideas drive it:
 
-1. **Fingerprint** — `projectStateFingerprint()` hashes the meaningful content of the snapshot (entity contents + clocks, ignoring row order). On each sync the local fingerprint is compared to the folder's `manifest.json` fingerprint. If they match, there is nothing to do and the sync is essentially free. If they differ, a merge runs and the result is written back.
+1. **Fingerprint** — `projectStateFingerprint()` hashes the meaningful content of the compact index, including split payload hashes, ignoring row order. On each sync the local fingerprint is compared to the folder's `manifest.json` fingerprint. If they match, there is nothing to do and the sync is essentially free. If they differ, a merge runs and the result is written back.
 
 2. **Per-entity clocks** — every structural row carries a `sync_id` and an `updated_at` modification clock; every review carries a `review_sync_id`. When the same entity exists on both sides, the one with the newer `updated_at` wins (**last-writer-wins**). Different entities added on different machines both survive — a merge never drops an entity just because the other side hasn't seen it yet.
 
@@ -1003,11 +1009,11 @@ Crucially, **absence is never deletion.** If an entity is missing from the incom
 ### Tombstones — the only way deletions travel
 
 - **Structural entities** (encounter, media file, form, instruction, media type): deleting one records a row in `deleted_structure` via `recordStructureTombstone(db, projectId, kind, id)` *before* the row is removed. That tombstone rides along in `project-state.json`; peers that see it delete their local copy. If you ever add a new delete path for a structural entity and forget the tombstone, the deletion silently won't sync.
-- **Reviews**: soft-delete only. `deleted_at` is set and the row is **kept** (so it can still be inspected/restored). The soft-deleted review travels inside the snapshot, and the LWW clock resolves restore-vs-delete races. The legacy `deleted_reviews` table is still written but not consulted in the v2 path.
+- **Reviews**: soft-delete only. `deleted_at` is set and the row is **kept** (so it can still be inspected/restored). The soft-deleted review travels in its split review payload, indexed by `project-state.json`, and the LWW clock resolves restore-vs-delete races. The legacy `deleted_reviews` table is still written but not consulted in the v3 path.
 
 ### Reviews carry their snapshot
 
-Because forms and media types are versioned, a review in the snapshot also carries the `workspace_snapshot` and per-response `form_snapshot` captured when it was filled. On merge, `localizeWorkspaceSnapshot` (in `services/snapshots.js`) rewrites the snapshot's embedded form/instruction ids from the sender's local ids to the receiver's local ids (matching by `sync_id`, falling back to name), so the snapshot stays meaningful on every machine.
+Because forms and media types are versioned, a review payload carries the `workspace_snapshot` and per-response `form_snapshot` captured when it was filled. For sync-size reasons, protocol v3 can compact form schemas in those snapshots to `form_sync_id + version` references when the matching form-version payload is present. On merge, the payload is expanded and `localizeWorkspaceSnapshot` (in `services/snapshots.js`) rewrites embedded form/instruction ids from the sender's local ids to the receiver's local ids (matching by `sync_id`, falling back to name), so the snapshot stays meaningful on every machine.
 
 ### Connectivity and auto-sync cadence
 
@@ -1342,8 +1348,8 @@ The `release` job runs after all three build jobs finish. It downloads all artif
 
 ## Part 9: Key Design Decisions and Why
 
-**Why one `project-state.json` snapshot instead of many per-machine files?**
-The original design split data into a config file, a per-machine reviews file, and a deletions file, with a `config_version` counter deciding who won. It worked but was fragile: the counter could gate the wrong side, "who owns this" was ambiguous, and adding an entity on two machines at once could silently lose one. Protocol v2 replaced it with a single snapshot merged **per entity** by `sync_id` + `updated_at` (last-writer-wins), with a content **fingerprint** to skip no-op syncs. Different entities added on different machines all survive; the merge never infers deletion from absence. The trade-off — rewriting the whole snapshot on change instead of one small file — is cheap at this data scale and far less error-prone.
+**Why a `project-state.json` index plus split payload files?**
+The original design split data into a config file, a per-machine reviews file, and a deletions file, with a `config_version` counter deciding who won. It worked but was fragile: the counter could gate the wrong side, "who owns this" was ambiguous, and adding an entity on two machines at once could silently lose one. Protocol v2 fixed that with a single snapshot merged **per entity** by `sync_id` + `updated_at` (last-writer-wins). Protocol v3 keeps the same coordinated merge model but makes `project-state.json` a compact index containing hashes/paths for large payloads. Different entities added on different machines all survive; the merge never infers deletion from absence; and one large review/form no longer bloats the central comparison file.
 
 **Why soft-delete reviews and use tombstones for structure?**
 If you hard-delete a row and then sync, other machines still have it — and there's no way to distinguish "deleted" from "not synced yet." Reviews are soft-deleted (`deleted_at` set, row kept) so the deletion travels inside the snapshot and can even be undone. Structural deletions record a `deleted_structure` tombstone, which is the *only* signal that propagates them — `applyStructure` never prunes, so without the tombstone the item would just reappear from a peer.
@@ -1355,7 +1361,7 @@ Forms change over time — fields get added, removed, reordered. A row-per-field
 `reviewer_uuid` identifies the machine, not the review. One machine can have multiple reviews for the same media file (e.g. a reviewer re-did a review after un-submitting). `review_sync_id` is a UUID for the specific review row, making sync matching and deletion precise regardless of how many reviews exist per reviewer per file.
 
 **Why a tiny `manifest.json` next to the snapshot?**
-`project-state.json` can be large. `manifest.json` is a few bytes and carries the content **fingerprint**; comparing fingerprints first lets a sync (or a poll) cheaply decide whether anything actually changed before reading or writing the full snapshot. It's the same idea as a CDN's `ETag`.
+`manifest.json` is a few bytes and carries the content **fingerprint**; comparing fingerprints first lets a sync (or a poll) cheaply decide whether anything actually changed before reading the compact index or split payload files. It's the same idea as a CDN's `ETag`.
 
 **Why snapshot the instrument at review time, and version forms/media types?**
 Studies run for months and PIs revise forms mid-stream. If reviews referenced only the *live* form, an edit would retroactively change what past reviews appear to have asked — corrupting the record. Instead, each review captures a `workspace_snapshot`/`form_snapshot` of the exact instrument it was filled with, and every edit is preserved in `form_versions`/`media_type_versions`. Coders always see their own version, the Excel export keeps original labels and never drops removed questions, and re-aligning old reviews to a new version is an explicit, opt-in migration rather than a side effect of saving.

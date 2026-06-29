@@ -7,7 +7,11 @@ import TutorialBubble from './TutorialBubble'
 //
 //   const tour = useTour(STEPS, 'sdmo_tour_project_v1', { ready: !loading })
 //   ... <button onClick={tour.start}>?</button> ... {tour.node}
+<<<<<<< Updated upstream
 export default function useTour(steps, storageKey, { ready = true, delay = 500, onStart } = {}) {
+=======
+export default function useTour(steps, storageKey, { ready = true, autoStart = true, delay = 500, onStart, onComplete, onSkip } = {}) {
+>>>>>>> Stashed changes
   const [step, setStep] = useState(null)
   const [autoFired, setAutoFired] = useState(false)
 
@@ -26,11 +30,11 @@ export default function useTour(steps, storageKey, { ready = true, delay = 500, 
   }, [steps])
 
   useEffect(() => {
-    if (autoFired || !ready || !storageKey) return
+    if (!autoStart || autoFired || !ready || !storageKey) return
     if (localStorage.getItem(storageKey)) { setAutoFired(true); return }
     const t = setTimeout(() => { onStart?.(); setStep(resolve(0)); setAutoFired(true) }, delay)
     return () => clearTimeout(t)
-  }, [ready, autoFired, storageKey, delay, resolve, onStart])
+  }, [ready, autoStart, autoFired, storageKey, delay, resolve, onStart])
 
   const start = useCallback(() => { onStart?.(); setAutoFired(true); setStep(resolve(0)) }, [resolve, onStart])
 

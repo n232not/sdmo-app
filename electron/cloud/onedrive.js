@@ -167,8 +167,20 @@ async function graphRequest(method, endpoint, body) {
 }
 
 async function listFiles(folderId) {
-  const data = await graphRequest('GET', `/items/${folderId}/children?$select=id,name,folder,file`)
-  return (data.value || []).map(item => ({ id: item.id, name: item.name, isFolder: !!item.folder }))
+  const token = await ensureValidToken()
+  let url = `${GRAPH_BASE}/items/${folderId}/children?$select=id,name,folder,file`
+  const items = []
+  while (url) {
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+    if (!res.ok) {
+      const err = await res.text()
+      throw new Error(`Graph API listFiles failed: ${res.status} ${err}`)
+    }
+    const data = await res.json()
+    items.push(...(data.value || []))
+    url = data['@odata.nextLink'] || null
+  }
+  return items.map(item => ({ id: item.id, name: item.name, isFolder: !!item.folder }))
 }
 
 async function listFolders(folderId) {

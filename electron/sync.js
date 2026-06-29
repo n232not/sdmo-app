@@ -6,8 +6,11 @@ const { getDb, backupDb } = require('./db')
 const { getSettings, getProjectName, getOrCreateUUID } = require('./settings')
 const { localizeWorkspaceSnapshot, parseJson } = require('./services/snapshots')
 
-const SYNC_PROTOCOL_VERSION = 2
+const SYNC_PROTOCOL_VERSION = 3
 const PROJECT_STATE_FILENAME = 'project-state.json'
+const REVIEWS_DIR = 'reviews'
+const FORM_VERSIONS_DIR = 'form-versions'
+const MEDIA_TYPE_VERSIONS_DIR = 'media-type-versions'
 const AUTO_SYNC_INTERVAL_MS = 5 * 60 * 1000
 
 // Bump when the split-config file format changes in a backward-incompatible way.
@@ -921,37 +924,237 @@ function maxClock(...values) {
     .pop() || null
 }
 
+function syncFileName(id, suffix = '.json') {
+  return `${encodeURIComponent(String(id || 'unknown'))}${suffix}`
+}
+
+function formVersionKey(formSyncId, version) {
+  return `${formSyncId || ''}@${version || 1}`
+}
+
+function mediaTypeVersionKey(mediaTypeSyncId, version) {
+  return `${mediaTypeSyncId || ''}@${version || 1}`
+}
+
+function compactFormSnapshot(formSnapshot, formVersionCatalog) {
+  if (!formSnapshot) return null
+  const key = formVersionKey(formSnapshot.sync_id, formSnapshot.version)
+  if (!formVersionCatalog?.has(key)) return formSnapshot
+  const { schema, ...rest } = formSnapshot
+  return { ...rest, schema_ref: { form_sync_id: formSnapshot.sync_id || null, version: formSnapshot.version || 1 } }
+}
+
+function expandFormSnapshot(formSnapshot, formVersionCatalog) {
+  if (!formSnapshot) return null
+  if (formSnapshot.schema) return formSnapshot
+  const ref = formSnapshot.schema_ref || { form_sync_id: formSnapshot.sync_id, version: formSnapshot.version }
+  const version = ref?.form_sync_id ? formVersionCatalog?.get(formVersionKey(ref.form_sync_id, ref.version)) : null
+  if (!version) return formSnapshot
+  const { schema_ref, ...rest } = formSnapshot
+  return { ...rest, sync_id: rest.sync_id || ref.form_sync_id, version: rest.version || ref.version || 1, schema: version.schema || { sections: [] } }
+}
+
+function compactWorkspaceSnapshot(snapshot, formVersionCatalog) {
+  if (!snapshot) return null
+  const next = JSON.parse(JSON.stringify(snapshot))
+  for (const [key, formSnap] of Object.entries(next.forms || {})) {
+    next.forms[key] = compactFormSnapshot(formSnap, formVersionCatalog)
+  }
+  return next
+}
+
+function expandWorkspaceSnapshot(snapshot, formVersionCatalog) {
+  if (!snapshot) return null
+  const next = JSON.parse(JSON.stringify(snapshot))
+  for (const [key, formSnap] of Object.entries(next.forms || {})) {
+    next.forms[key] = expandFormSnapshot(formSnap, formVersionCatalog)
+  }
+  return next
+}
+
+function buildFormVersionPayloads(db, projectId, config = buildConfigExport(db, projectId)) {
+  const payloads = []
+  for (const f of (config.forms || [])) {
+    if (!f.sync_id) continue
+    payloads.push({
+      form_sync_id: f.sync_id,
+      version: f.schema_version || 1,
+      name: f.name,
+      schema: f.schema || { sections: [] },
+      source_updated_at: f.updated_at || null,
+      created_at: f.updated_at || null,
+      current: true,
+    })
+  }
+  for (const v of (config.form_versions || [])) payloads.push({ ...v, current: false })
+  return payloads
+}
+
+function buildMediaTypeVersionPayloads(db, projectId, config = buildConfigExport(db, projectId)) {
+  const payloads = []
+  for (const mt of (config.media_types || [])) {
+    if (!mt.sync_id) continue
+    payloads.push({
+      media_type_sync_id: mt.sync_id,
+      version: mt.config_version || 1,
+      name: mt.name,
+      config: {
+        name: mt.name,
+        reviews_required: mt.reviews_required,
+        allow_custom_tags: mt.allow_custom_tags ? 1 : 0,
+        color: mt.color,
+        tags: mt.tags || [],
+        workspace_tabs: mt.workspace_tabs || [],
+      },
+      source_updated_at: mt.updated_at || null,
+      created_at: mt.updated_at || null,
+      current: true,
+    })
+  }
+  for (const v of (config.media_type_versions || [])) payloads.push({ ...v, current: false })
+  return payloads
+}
+
+function formVersionCatalogFromState(state) {
+  const catalog = new Map()
+  for (const f of (state.forms || [])) {
+    if (!f.sync_id) continue
+    catalog.set(formVersionKey(f.sync_id, f.schema_version || 1), {
+      form_sync_id: f.sync_id,
+      version: f.schema_version || 1,
+      name: f.name,
+      schema: f.schema || { sections: [] },
+    })
+  }
+  for (const v of (state.form_versions || [])) {
+    if (v.form_sync_id) catalog.set(formVersionKey(v.form_sync_id, v.version || 1), v)
+  }
+  return catalog
+}
+
+function compactReviewForSync(review, formVersionCatalog) {
+  return {
+    ...review,
+    workspace_snapshot: compactWorkspaceSnapshot(review.workspace_snapshot, formVersionCatalog),
+    form_responses: (review.form_responses || []).map(fr => ({
+      ...fr,
+      form_snapshot: compactFormSnapshot(fr.form_snapshot, formVersionCatalog),
+    })),
+  }
+}
+
+function expandReviewFromSync(review, formVersionCatalog) {
+  return {
+    ...review,
+    workspace_snapshot: expandWorkspaceSnapshot(review.workspace_snapshot, formVersionCatalog),
+    form_responses: (review.form_responses || []).map(fr => ({
+      ...fr,
+      form_snapshot: expandFormSnapshot(fr.form_snapshot, formVersionCatalog),
+    })),
+  }
+}
+
+function reviewIndexEntry(review) {
+  return {
+    review_sync_id: review.review_sync_id,
+    media_sync_id: review.media_sync_id || null,
+    encounter_sync_id: review.encounter_sync_id || null,
+    reviewer_name: review.reviewer_name,
+    reviewer_uuid: review.reviewer_uuid || null,
+    updated_at: review.updated_at || review.created_at || null,
+    deleted_at: review.deleted_at || null,
+    hash: buildReviewHash(review),
+    path: `${REVIEWS_DIR}/${syncFileName(review.review_sync_id || buildReviewHash(review))}`,
+  }
+}
+
+function indexByPathHash(entries = []) {
+  const out = new Map()
+  for (const entry of entries || []) {
+    if (entry?.path && entry?.hash) out.set(entry.path, entry.hash)
+  }
+  return out
+}
+
+function sameIndexedPayload(previousEntries, entry) {
+  if (!entry?.path || !entry?.hash) return false
+  return indexByPathHash(previousEntries).get(entry.path) === entry.hash
+}
+
+function reviewIndexBySyncId(indexState) {
+  const out = new Map()
+  for (const review of (indexState?.reviews || [])) {
+    if (review?.review_sync_id) out.set(review.review_sync_id, review)
+  }
+  return out
+}
+
+function remoteReviewsNeedingHydration(remoteIndex, localIndex) {
+  if (remoteIndex?.layout !== 'split-v1' || !localIndex) return remoteIndex?.reviews || []
+  const localReviews = reviewIndexBySyncId(localIndex)
+  return (remoteIndex.reviews || []).filter(remote => {
+    const local = remote.review_sync_id ? localReviews.get(remote.review_sync_id) : null
+    return !local || local.hash !== remote.hash
+  })
+}
+
 function buildReviewStateExport(db, projectId) {
-  return db.prepare(`
+  const reviews = db.prepare(`
       SELECT r.*, mf.sync_id as media_sync_id, mf.name as media_name, e.sync_id as encounter_sync_id, e.name as encounter_name
       FROM reviews r
       JOIN media_files mf ON r.media_file_id = mf.id
       JOIN encounters e ON mf.encounter_id = e.id
       WHERE e.project_id=?
       ORDER BY r.created_at, r.id
-    `).all(projectId).map(rev => {
-    const timestamps = db.prepare('SELECT * FROM timestamps WHERE review_id=? ORDER BY time_seconds, created_at, id').all(rev.id)
-      .map(ts => ({
-        time_seconds: ts.time_seconds,
-        tag_label: ts.tag_label || null,
-        tag_color: ts.tag_color || null,
-        notes: ts.notes || '',
-        created_at: ts.created_at,
-      }))
-    const formResponses = db.prepare(`
-        SELECT fr.responses, fr.updated_at, fr.form_sync_id, fr.form_version, fr.form_snapshot, f.name as form_name, f.sync_id as current_form_sync_id
-        FROM form_responses fr
-        JOIN forms f ON fr.form_id = f.id
-        WHERE fr.review_id=?
-        ORDER BY f.name
-      `).all(rev.id).map(fr => ({
+    `).all(projectId)
+  if (!reviews.length) return []
+
+  const timestampsByReview = new Map()
+  for (const ts of db.prepare(`
+      SELECT ts.*, r.id as review_id
+      FROM timestamps ts
+      JOIN reviews r ON ts.review_id = r.id
+      JOIN media_files mf ON r.media_file_id = mf.id
+      JOIN encounters e ON mf.encounter_id = e.id
+      WHERE e.project_id=?
+      ORDER BY ts.review_id, ts.time_seconds, ts.created_at, ts.id
+    `).all(projectId)) {
+    if (!timestampsByReview.has(ts.review_id)) timestampsByReview.set(ts.review_id, [])
+    timestampsByReview.get(ts.review_id).push({
+      time_seconds: ts.time_seconds,
+      tag_label: ts.tag_label || null,
+      tag_color: ts.tag_color || null,
+      notes: ts.notes || '',
+      created_at: ts.created_at,
+    })
+  }
+
+  const responsesByReview = new Map()
+  for (const fr of db.prepare(`
+      SELECT fr.review_id, fr.responses, fr.updated_at, fr.form_sync_id, fr.form_version, fr.form_snapshot,
+             f.name as form_name, f.sync_id as current_form_sync_id
+      FROM form_responses fr
+      JOIN reviews r ON fr.review_id = r.id
+      JOIN media_files mf ON r.media_file_id = mf.id
+      JOIN encounters e ON mf.encounter_id = e.id
+      JOIN forms f ON fr.form_id = f.id
+      WHERE e.project_id=?
+      ORDER BY fr.review_id, f.name
+    `).all(projectId)) {
+    if (!responsesByReview.has(fr.review_id)) responsesByReview.set(fr.review_id, [])
+    responsesByReview.get(fr.review_id).push({
       form_name: fr.form_name,
       form_sync_id: fr.form_sync_id || fr.current_form_sync_id || null,
       form_version: fr.form_version || null,
       form_snapshot: fr.form_snapshot ? safeJsonParse(fr.form_snapshot, null) : null,
       responses: fr.responses,
       updated_at: fr.updated_at,
-    }))
+    })
+  }
+
+  return reviews.map(rev => {
+    const timestamps = timestampsByReview.get(rev.id) || []
+    const formResponses = responsesByReview.get(rev.id) || []
     const workspaceSnapshot = rev.workspace_snapshot ? safeJsonParse(rev.workspace_snapshot, null) : null
     return {
       review_sync_id: rev.review_sync_id || null,
@@ -1005,6 +1208,49 @@ function buildProjectStateExport(db, projectId) {
   }
 }
 
+function buildProjectStateIndexExport(db, projectId) {
+  const config = buildConfigExport(db, projectId)
+  const formPayloads = buildFormVersionPayloads(db, projectId, config)
+  const mediaTypePayloads = buildMediaTypeVersionPayloads(db, projectId, config)
+  const formCatalog = new Map(formPayloads.map(v => [formVersionKey(v.form_sync_id, v.version), v]))
+  const reviews = buildReviewStateExport(db, projectId).map(r => compactReviewForSync(r, formCatalog))
+  return {
+    sdmo_sync: true,
+    protocol_version: SYNC_PROTOCOL_VERSION,
+    layout: 'split-v1',
+    version: 1,
+    config_version: config.config_version || 1,
+    exported_at: new Date().toISOString(),
+    project: config.project,
+    forms: config.forms || [],
+    form_versions: formPayloads.map(v => ({
+      form_sync_id: v.form_sync_id,
+      version: v.version || 1,
+      name: v.name || '',
+      source_updated_at: v.source_updated_at || null,
+      created_at: v.created_at || null,
+      current: !!v.current,
+      hash: hashOf({ name: v.name || '', schema: v.schema || { sections: [] } }),
+      path: `${FORM_VERSIONS_DIR}/${syncFileName(`${v.form_sync_id}-v${v.version || 1}`)}`,
+    })),
+    instructions: config.instructions || [],
+    media_types: config.media_types || [],
+    media_type_versions: mediaTypePayloads.map(v => ({
+      media_type_sync_id: v.media_type_sync_id,
+      version: v.version || 1,
+      name: v.name || '',
+      source_updated_at: v.source_updated_at || null,
+      created_at: v.created_at || null,
+      current: !!v.current,
+      hash: hashOf({ name: v.name || '', config: v.config || {} }),
+      path: `${MEDIA_TYPE_VERSIONS_DIR}/${syncFileName(`${v.media_type_sync_id}-v${v.version || 1}`)}`,
+    })),
+    encounters: config.encounters || [],
+    reviews: reviews.map(reviewIndexEntry),
+    deleted_structure: buildStructureTombstones(db, projectId),
+  }
+}
+
 function canonicalizeProjectState(state) {
   const sortBy = (arr, key) => [...(arr || [])].sort((a, b) => {
     const av = a?.[key] || a?.name || ''
@@ -1024,7 +1270,8 @@ function canonicalizeProjectState(state) {
       form_sync_id: v.form_sync_id,
       version: v.version || 1,
       name: v.name || '',
-      schema: v.schema || { sections: [] },
+      schema: v.schema || null,
+      hash: v.hash || null,
     })),
     instructions: sortBy(state.instructions, 'sync_id').map(stripClock),
     media_types: sortBy(state.media_types, 'sync_id').map(mt => ({
@@ -1036,7 +1283,8 @@ function canonicalizeProjectState(state) {
       media_type_sync_id: v.media_type_sync_id,
       version: v.version || 1,
       name: v.name || '',
-      config: v.config || {},
+      config: v.config || null,
+      hash: v.hash || null,
     })),
     encounters: sortBy(state.encounters, 'sync_id').map(enc => ({
       sync_id: enc.sync_id,
@@ -1045,6 +1293,7 @@ function canonicalizeProjectState(state) {
     })),
     reviews: sortBy(state.reviews, 'review_sync_id').map(rev => ({
       review_sync_id: rev.review_sync_id,
+      hash: rev.hash || null,
       media_sync_id: rev.media_sync_id || null,
       media_name: rev.media_name,
       encounter_sync_id: rev.encounter_sync_id || null,
@@ -1079,7 +1328,7 @@ function canonicalizeProjectState(state) {
 }
 
 function projectStateFingerprint(db, projectId) {
-  return hashOf(canonicalizeProjectState(buildProjectStateExport(db, projectId)))
+  return hashOf(canonicalizeProjectState(buildProjectStateIndexExport(db, projectId)))
 }
 
 function buildReviewHash(review) {
@@ -1108,7 +1357,24 @@ function buildReviewHash(review) {
   })
 }
 
-function applyReviewState(db, projectId, review, { merge = false } = {}) {
+function reviewStateLookupKeys(review) {
+  const keys = []
+  if (review?.review_sync_id) keys.push(`sync:${review.review_sync_id}`)
+  keys.push(`legacy:${review?.media_sync_id || ''}:${review?.reviewer_name || ''}:${review?.created_at || ''}`)
+  return keys
+}
+
+function buildReviewStateLookup(reviewStates) {
+  const lookup = new Map()
+  for (const state of (reviewStates || [])) {
+    for (const key of reviewStateLookupKeys(state)) {
+      if (!lookup.has(key)) lookup.set(key, state)
+    }
+  }
+  return lookup
+}
+
+function applyReviewState(db, projectId, review, { merge = false, localReviewLookup = null } = {}) {
   let localMedia = review.media_sync_id
     ? db.prepare('SELECT id FROM media_files WHERE sync_id=?').get(review.media_sync_id)
     : null
@@ -1135,7 +1401,15 @@ function applyReviewState(db, projectId, review, { merge = false } = {}) {
 
   const incomingClock = normalizeClockValue(review.updated_at || review.created_at) || ''
   if (local) {
-    const localState = buildReviewStateExport(db, projectId).find(r => r.review_sync_id === local.review_sync_id || (!r.review_sync_id && r.reviewer_name === local.reviewer_name && r.created_at === local.created_at && r.media_sync_id === review.media_sync_id))
+    let localState = null
+    if (localReviewLookup) {
+      for (const key of reviewStateLookupKeys({ ...review, review_sync_id: local.review_sync_id || review.review_sync_id })) {
+        localState = localReviewLookup.get(key)
+        if (localState) break
+      }
+    } else {
+      localState = buildReviewStateExport(db, projectId).find(r => r.review_sync_id === local.review_sync_id || (!r.review_sync_id && r.reviewer_name === local.reviewer_name && r.created_at === local.created_at && r.media_sync_id === review.media_sync_id))
+    }
     let write = true
     let conflict = null
     if (merge && localState) {
@@ -1250,13 +1524,192 @@ function mergeProjectStateImport(db, projectId, stateData, { merge = true } = {}
       encounters: stateData.encounters || [],
     }, { merge })
     const conflicts = []
+    const localReviewLookup = merge ? buildReviewStateLookup(buildReviewStateExport(db, projectId)) : null
     for (const review of (stateData.reviews || [])) {
-      const result = applyReviewState(db, projectId, review, { merge })
+      const result = applyReviewState(db, projectId, review, { merge, localReviewLookup })
       if (result.conflict) conflicts.push(result.conflict)
     }
     return conflicts
   })
   return { conflicts: tx() || [] }
+}
+
+function readJsonFileIfExists(filePath) {
+  try { return JSON.parse(fs.readFileSync(filePath, 'utf8')) } catch { return null }
+}
+
+function localPayloadPath(syncFolder, relPath) {
+  if (!relPath) return null
+  const base = path.resolve(syncFolder)
+  const full = path.resolve(syncFolder, relPath)
+  return full === base || full.startsWith(`${base}${path.sep}`) ? full : null
+}
+
+function hydrateSplitProjectStateLocal(stateData, syncFolder, { localIndex = null } = {}) {
+  if (stateData?.layout !== 'split-v1') return stateData
+  const readPayload = (entry) => {
+    const payloadPath = localPayloadPath(syncFolder, entry.path)
+    return payloadPath ? readJsonFileIfExists(payloadPath) : null
+  }
+  const state = { ...stateData }
+  state.form_versions = (stateData.form_versions || [])
+    .map(entry => {
+      const payload = readPayload(entry)
+      return payload ? { ...payload, current: !!entry.current } : null
+    })
+    .filter(v => v && !v.current)
+  state.media_type_versions = (stateData.media_type_versions || [])
+    .map(entry => {
+      const payload = readPayload(entry)
+      return payload ? { ...payload, current: !!entry.current } : null
+    })
+    .filter(v => v && !v.current)
+  const formCatalog = formVersionCatalogFromState({
+    ...stateData,
+    form_versions: (stateData.form_versions || [])
+      .map(readPayload)
+      .filter(Boolean),
+  })
+  state.reviews = remoteReviewsNeedingHydration(stateData, localIndex)
+    .map(readPayload)
+    .filter(Boolean)
+    .map(review => expandReviewFromSync(review, formCatalog))
+  return state
+}
+
+function writeSplitProjectStateLocal(db, projectId, syncFolder, indexState = buildProjectStateIndexExport(db, projectId), previousIndex = null) {
+  const formDir = path.join(syncFolder, FORM_VERSIONS_DIR)
+  const mediaTypeDir = path.join(syncFolder, MEDIA_TYPE_VERSIONS_DIR)
+  const reviewsDir = path.join(syncFolder, REVIEWS_DIR)
+  fs.mkdirSync(formDir, { recursive: true })
+  fs.mkdirSync(mediaTypeDir, { recursive: true })
+  fs.mkdirSync(reviewsDir, { recursive: true })
+
+  const config = buildConfigExport(db, projectId)
+  const formPayloads = buildFormVersionPayloads(db, projectId, config)
+  const mediaTypePayloads = buildMediaTypeVersionPayloads(db, projectId, config)
+  const formCatalog = new Map(formPayloads.map(v => [formVersionKey(v.form_sync_id, v.version), v]))
+  const previousFormHashes = indexByPathHash(previousIndex?.form_versions)
+  const previousMediaTypeHashes = indexByPathHash(previousIndex?.media_type_versions)
+  const previousReviewHashes = indexByPathHash(previousIndex?.reviews)
+  const writePayload = (dir, entry, previousHashes, payload) => {
+    const fullPath = path.join(dir, path.basename(entry.path))
+    if (previousHashes.get(entry.path) === entry.hash && fs.existsSync(fullPath)) return
+    fs.writeFileSync(fullPath, JSON.stringify(payload, null, 2))
+  }
+  const formEntries = new Map((indexState.form_versions || []).map(e => [formVersionKey(e.form_sync_id, e.version), e]))
+  const mediaTypeEntries = new Map((indexState.media_type_versions || []).map(e => [mediaTypeVersionKey(e.media_type_sync_id, e.version), e]))
+  for (const payload of formPayloads) {
+    const entry = formEntries.get(formVersionKey(payload.form_sync_id, payload.version))
+    if (entry) writePayload(formDir, entry, previousFormHashes, payload)
+  }
+  for (const payload of mediaTypePayloads) {
+    const entry = mediaTypeEntries.get(mediaTypeVersionKey(payload.media_type_sync_id, payload.version))
+    if (entry) writePayload(mediaTypeDir, entry, previousMediaTypeHashes, payload)
+  }
+  for (const review of buildReviewStateExport(db, projectId).map(r => compactReviewForSync(r, formCatalog))) {
+    const entry = reviewIndexEntry(review)
+    writePayload(reviewsDir, entry, previousReviewHashes, review)
+  }
+  fs.writeFileSync(path.join(syncFolder, PROJECT_STATE_FILENAME), JSON.stringify(indexState, null, 2))
+  fs.writeFileSync(path.join(syncFolder, 'manifest.json'), JSON.stringify(buildManifest(db, projectId, hashOf(canonicalizeProjectState(indexState)))))
+}
+
+async function readCloudFolderFiles(adapter, parentId, name) {
+  const children = await adapter.listFiles(parentId)
+  const folder = children.find(f => f.name === name && f.isFolder)
+  if (!folder) return { folder: null, files: [] }
+  return { folder, files: await adapter.listFiles(folder.id) }
+}
+
+async function runLimited(items, limit, worker) {
+  const executing = new Set()
+  for (const item of items) {
+    const p = Promise.resolve().then(() => worker(item))
+    executing.add(p)
+    p.finally(() => executing.delete(p))
+    if (executing.size >= limit) await Promise.race(executing)
+  }
+  await Promise.all(executing)
+}
+
+async function hydrateSplitProjectStateCloud(stateData, adapter, folderId, { localIndex = null } = {}) {
+  if (stateData?.layout !== 'split-v1') return stateData
+  const [formFolder, mediaTypeFolder, reviewsFolder] = await Promise.all([
+    readCloudFolderFiles(adapter, folderId, FORM_VERSIONS_DIR),
+    readCloudFolderFiles(adapter, folderId, MEDIA_TYPE_VERSIONS_DIR),
+    readCloudFolderFiles(adapter, folderId, REVIEWS_DIR),
+  ])
+  const fileByPath = new Map()
+  for (const file of formFolder.files) fileByPath.set(`${FORM_VERSIONS_DIR}/${file.name}`, file.id)
+  for (const file of mediaTypeFolder.files) fileByPath.set(`${MEDIA_TYPE_VERSIONS_DIR}/${file.name}`, file.id)
+  for (const file of reviewsFolder.files) fileByPath.set(`${REVIEWS_DIR}/${file.name}`, file.id)
+  const readPath = async (p) => {
+    const id = fileByPath.get(p || '')
+    if (!id) return null
+    try { return JSON.parse(await adapter.readFile(id)) } catch { return null }
+  }
+
+  const state = { ...stateData }
+  const formEntries = stateData.form_versions || []
+  const formPayloadPairs = await Promise.all(formEntries.map(async entry => ({ entry, payload: await readPath(entry.path) })))
+  const allFormPayloads = formPayloadPairs.map(p => p.payload).filter(Boolean)
+  state.form_versions = formPayloadPairs.filter(p => p.payload && !p.entry.current).map(p => p.payload)
+  const mediaTypeEntries = stateData.media_type_versions || []
+  const mediaTypePayloadPairs = await Promise.all(mediaTypeEntries.map(async entry => ({ entry, payload: await readPath(entry.path) })))
+  const allMediaTypePayloads = mediaTypePayloadPairs.map(p => p.payload).filter(Boolean)
+  state.media_type_versions = mediaTypePayloadPairs.filter(p => p.payload && !p.entry.current).map(p => p.payload)
+  const formCatalog = formVersionCatalogFromState({ ...stateData, form_versions: allFormPayloads })
+  state.reviews = (await Promise.all(remoteReviewsNeedingHydration(stateData, localIndex).map(entry => readPath(entry.path))))
+    .filter(Boolean)
+    .map(review => expandReviewFromSync(review, formCatalog))
+  return state
+}
+
+async function writeSplitProjectStateCloud(db, projectId, adapter, folderId, indexState = buildProjectStateIndexExport(db, projectId), previousIndex = null) {
+  const [formDirId, mediaTypeDirId, reviewsDirId] = await Promise.all([
+    adapter.ensureFolder(folderId, FORM_VERSIONS_DIR),
+    adapter.ensureFolder(folderId, MEDIA_TYPE_VERSIONS_DIR),
+    adapter.ensureFolder(folderId, REVIEWS_DIR),
+  ])
+  const [formFiles, mediaTypeFiles, reviewFiles] = await Promise.all([
+    adapter.listFiles(formDirId),
+    adapter.listFiles(mediaTypeDirId),
+    adapter.listFiles(reviewsDirId),
+  ])
+  const existing = {
+    [FORM_VERSIONS_DIR]: new Set(formFiles.map(f => f.name)),
+    [MEDIA_TYPE_VERSIONS_DIR]: new Set(mediaTypeFiles.map(f => f.name)),
+    [REVIEWS_DIR]: new Set(reviewFiles.map(f => f.name)),
+  }
+  const config = buildConfigExport(db, projectId)
+  const formPayloads = buildFormVersionPayloads(db, projectId, config)
+  const mediaTypePayloads = buildMediaTypeVersionPayloads(db, projectId, config)
+  const formCatalog = new Map(formPayloads.map(v => [formVersionKey(v.form_sync_id, v.version), v]))
+  const previousFormHashes = indexByPathHash(previousIndex?.form_versions)
+  const previousMediaTypeHashes = indexByPathHash(previousIndex?.media_type_versions)
+  const previousReviewHashes = indexByPathHash(previousIndex?.reviews)
+  const formEntries = new Map((indexState.form_versions || []).map(e => [formVersionKey(e.form_sync_id, e.version), e]))
+  const mediaTypeEntries = new Map((indexState.media_type_versions || []).map(e => [mediaTypeVersionKey(e.media_type_sync_id, e.version), e]))
+  const jobs = []
+  const addJob = (folderName, folderIdToWrite, entry, previousHashes, payload) => {
+    if (!entry) return
+    const fileName = path.basename(entry.path)
+    if (previousHashes.get(entry.path) === entry.hash && existing[folderName]?.has(fileName)) return
+    jobs.push({ folderId: folderIdToWrite, fileName, payload })
+  }
+  for (const payload of formPayloads) {
+    addJob(FORM_VERSIONS_DIR, formDirId, formEntries.get(formVersionKey(payload.form_sync_id, payload.version)), previousFormHashes, payload)
+  }
+  for (const payload of mediaTypePayloads) {
+    addJob(MEDIA_TYPE_VERSIONS_DIR, mediaTypeDirId, mediaTypeEntries.get(mediaTypeVersionKey(payload.media_type_sync_id, payload.version)), previousMediaTypeHashes, payload)
+  }
+  for (const review of buildReviewStateExport(db, projectId).map(r => compactReviewForSync(r, formCatalog))) {
+    addJob(REVIEWS_DIR, reviewsDirId, reviewIndexEntry(review), previousReviewHashes, review)
+  }
+  await runLimited(jobs, 4, job => adapter.writeFile(job.folderId, job.fileName, JSON.stringify(job.payload, null, 2)))
+  await adapter.writeFile(folderId, PROJECT_STATE_FILENAME, JSON.stringify(indexState, null, 2))
+  await adapter.writeFile(folderId, 'manifest.json', JSON.stringify(buildManifest(db, projectId, hashOf(canonicalizeProjectState(indexState)))))
 }
 
 // ─── Structure apply entry points ─────────────────────────────────────────────
@@ -1417,23 +1870,24 @@ async function migrateLegacyCloudFolderIntoDb(db, projectId, adapter, folderId, 
 function syncProjectStateLocal(db, projectId, syncFolder) {
   const manifest = readLocalManifest(syncFolder)
   const folderFingerprint = manifest?.fingerprint || null
-  const localFingerprint = projectStateFingerprint(db, projectId)
+  const localIndex = buildProjectStateIndexExport(db, projectId)
+  const localFingerprint = hashOf(canonicalizeProjectState(localIndex))
   if (folderFingerprint && folderFingerprint === localFingerprint) return { conflicts: [] }
 
   const statePath = path.join(syncFolder, PROJECT_STATE_FILENAME)
   let conflicts = []
 
   if (fs.existsSync(statePath)) {
-    const stateData = JSON.parse(fs.readFileSync(statePath, 'utf8'))
+    const stateData = hydrateSplitProjectStateLocal(JSON.parse(fs.readFileSync(statePath, 'utf8')), syncFolder, { localIndex })
     conflicts = mergeProjectStateImport(db, projectId, stateData, { merge: true }).conflicts
   } else {
     migrateLegacyLocalFolderIntoDb(db, projectId, syncFolder)
   }
 
-  const postFingerprint = projectStateFingerprint(db, projectId)
+  const postIndex = buildProjectStateIndexExport(db, projectId)
+  const postFingerprint = hashOf(canonicalizeProjectState(postIndex))
   if (postFingerprint !== folderFingerprint || !fs.existsSync(statePath) || !isProtocolV2Manifest(manifest)) {
-    fs.writeFileSync(statePath, JSON.stringify(buildProjectStateExport(db, projectId), null, 2))
-    fs.writeFileSync(path.join(syncFolder, 'manifest.json'), JSON.stringify(buildManifest(db, projectId, postFingerprint)))
+    writeSplitProjectStateLocal(db, projectId, syncFolder, postIndex, fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, 'utf8')) : null)
   }
   return { conflicts }
 }
@@ -1445,23 +1899,26 @@ async function syncProjectStateCloud(db, projectId, adapter, folderId, allFiles)
     try { manifest = JSON.parse(await adapter.readFile(manifestFile.id)) } catch {}
   }
   const cloudFingerprint = manifest?.fingerprint || null
-  const localFingerprint = projectStateFingerprint(db, projectId)
+  const localIndex = buildProjectStateIndexExport(db, projectId)
+  const localFingerprint = hashOf(canonicalizeProjectState(localIndex))
   if (cloudFingerprint && cloudFingerprint === localFingerprint) return { conflicts: [] }
 
   const stateFile = allFiles.find(f => f.name === PROJECT_STATE_FILENAME)
   let conflicts = []
+  let remoteIndex = null
 
   if (stateFile) {
-    const stateData = JSON.parse(await adapter.readFile(stateFile.id))
+    remoteIndex = JSON.parse(await adapter.readFile(stateFile.id))
+    const stateData = await hydrateSplitProjectStateCloud(remoteIndex, adapter, folderId, { localIndex })
     conflicts = mergeProjectStateImport(db, projectId, stateData, { merge: true }).conflicts
   } else {
     await migrateLegacyCloudFolderIntoDb(db, projectId, adapter, folderId, allFiles)
   }
 
-  const postFingerprint = projectStateFingerprint(db, projectId)
+  const postIndex = buildProjectStateIndexExport(db, projectId)
+  const postFingerprint = hashOf(canonicalizeProjectState(postIndex))
   if (postFingerprint !== cloudFingerprint || !stateFile || !isProtocolV2Manifest(manifest)) {
-    await adapter.writeFile(folderId, PROJECT_STATE_FILENAME, JSON.stringify(buildProjectStateExport(db, projectId), null, 2))
-    await adapter.writeFile(folderId, 'manifest.json', JSON.stringify(buildManifest(db, projectId, postFingerprint)))
+    await writeSplitProjectStateCloud(db, projectId, adapter, folderId, postIndex, remoteIndex)
   }
   return { conflicts }
 }
@@ -2503,9 +2960,10 @@ module.exports = {
   buildExport, mergeImport, createFromImport,
   buildReviewsWorkbook,
   buildConfigExport, buildReviewExport,
-  buildProjectStateExport, projectStateFingerprint,
+  buildProjectStateExport, buildProjectStateIndexExport, projectStateFingerprint,
   mergeConfigImport, mergeReviewFile,
   mergeProjectStateImport, assertProjectStateCompatible,
+  hydrateSplitProjectStateLocal, hydrateSplitProjectStateCloud,
   applyStructure, replaceStructureFromConfig, mergeStructureFromConfig,
   syncConfigLocal, syncConfigCloud,
   syncProjectStateLocal, syncProjectStateCloud,

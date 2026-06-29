@@ -11,7 +11,7 @@ const {
   syncProjectStateLocal, syncProjectStateCloud,
   mergeConfigImport, bumpConfigVersion, bumpAndSync,
   markSynced, getLastSyncAt,
-  mergeProjectStateImport, assertProjectStateCompatible, PROJECT_STATE_FILENAME,
+  mergeProjectStateImport, assertProjectStateCompatible, hydrateSplitProjectStateLocal, hydrateSplitProjectStateCloud, PROJECT_STATE_FILENAME,
   safeJsonParse,
 } = require('../sync')
 const structureService = require('../services/structure')
@@ -400,7 +400,7 @@ module.exports = function (ipcMain) {
     }
     const db = getDb()
     try {
-      const data = JSON.parse(fs.readFileSync(fs.existsSync(statePath) ? statePath : legacyConfigPath, 'utf8'))
+      let data = JSON.parse(fs.readFileSync(fs.existsSync(statePath) ? statePath : legacyConfigPath, 'utf8'))
       if (!data?.sdmo_sync && !data?.sdmo) return { error: 'Not a valid SDMo sync folder' }
       const r = db.prepare(
         'INSERT INTO projects (name, description, sync_folder, owner_password_hash) VALUES (?,?,?,?)'
@@ -416,6 +416,7 @@ module.exports = function (ipcMain) {
       }
       if (data.sdmo_sync) {
         assertProjectStateCompatible(data)
+        data = hydrateSplitProjectStateLocal(data, folderPath)
         mergeProjectStateImport(db, projectId, data, { merge: true })
       } else {
         mergeConfigImport(db, projectId, data, { force: true })
@@ -439,7 +440,7 @@ module.exports = function (ipcMain) {
         return { error: `No ${PROJECT_STATE_FILENAME} or project-config.json found in this folder. Select the project's sync folder.` }
       }
       const content = await adapter.readFile((stateFile || configFile).id)
-      const data = JSON.parse(content)
+      let data = JSON.parse(content)
       if (!data?.sdmo_sync && !data?.sdmo) return { error: 'Not a valid SDMo sync folder' }
       const r = db.prepare(
         'INSERT INTO projects (name, description, cloud_provider, cloud_folder_id, owner_password_hash) VALUES (?,?,?,?,?)'
@@ -456,6 +457,7 @@ module.exports = function (ipcMain) {
       }
       if (data.sdmo_sync) {
         assertProjectStateCompatible(data)
+        data = await hydrateSplitProjectStateCloud(data, adapter, folderId)
         mergeProjectStateImport(db, projectId, data, { merge: true })
       } else {
         mergeConfigImport(db, projectId, data, { force: true })

@@ -169,12 +169,19 @@ async function driveRequest(method, endpoint, body, params) {
 }
 
 async function listFiles(folderId) {
-  const data = await driveRequest('GET', '/files', undefined, {
-    q: `'${folderId}' in parents and trashed = false`,
-    fields: 'files(id,name,mimeType)',
-    pageSize: '1000',
-  })
-  return (data.files || []).map(f => ({
+  const files = []
+  let pageToken = null
+  do {
+    const data = await driveRequest('GET', '/files', undefined, {
+      q: `'${folderId}' in parents and trashed = false`,
+      fields: 'nextPageToken,files(id,name,mimeType)',
+      pageSize: '1000',
+      ...(pageToken ? { pageToken } : {}),
+    })
+    files.push(...(data.files || []))
+    pageToken = data.nextPageToken || null
+  } while (pageToken)
+  return files.map(f => ({
     id: f.id,
     name: f.name,
     isFolder: f.mimeType === 'application/vnd.google-apps.folder',
@@ -185,13 +192,20 @@ async function listFolders(folderId) {
   const token = await ensureValidToken()
   const parent = folderId || 'root'
   const q = `'${parent}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`
-  const url = new URL(`${DRIVE_BASE}/files`)
-  url.searchParams.set('q', q)
-  url.searchParams.set('fields', 'files(id,name)')
-  url.searchParams.set('pageSize', '100')
-  const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } })
-  const data = await res.json()
-  return (data.files || []).map(f => ({ id: f.id, name: f.name, isFolder: true }))
+  const files = []
+  let pageToken = null
+  do {
+    const url = new URL(`${DRIVE_BASE}/files`)
+    url.searchParams.set('q', q)
+    url.searchParams.set('fields', 'nextPageToken,files(id,name)')
+    url.searchParams.set('pageSize', '1000')
+    if (pageToken) url.searchParams.set('pageToken', pageToken)
+    const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } })
+    const data = await res.json()
+    files.push(...(data.files || []))
+    pageToken = data.nextPageToken || null
+  } while (pageToken)
+  return files.map(f => ({ id: f.id, name: f.name, isFolder: true }))
 }
 
 async function readFile(fileId) {

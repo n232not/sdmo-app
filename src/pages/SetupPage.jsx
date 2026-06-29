@@ -8,7 +8,12 @@ import InstructionEditor from '../components/setup/InstructionEditor'
 import Modal from '../components/ui/Modal'
 import useTour from '../components/ui/useTour'
 
+<<<<<<< Updated upstream
 const SECTIONS = ['Overview', 'Forms', 'Instructions', 'Media Types', 'Encounters', 'Files', 'Sync', 'Keybinds', 'Access', 'Versions', 'Deleted Reviews']
+=======
+const SECTIONS = ['Overview', 'Forms', 'Instructions', 'Media Types', 'Encounters', 'Files', 'Sync', 'Keybinds', 'Access', 'Versions', 'Deleted Reviews', 'About']
+const SAMPLE_PROJECT_NAME = '📘 Sample Tutorial Project'
+>>>>>>> Stashed changes
 
 const FILES_TOUR_STEPS = [
   {
@@ -54,7 +59,11 @@ export default function SetupPage() {
   const [editingType, setEditingType] = useState(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-  const filesTour = useTour(FILES_TOUR_STEPS, 'sdmo_tour_files_v1', { ready: section === 5 && !loading })
+  const isSampleProject = project?.name === SAMPLE_PROJECT_NAME
+  const filesTour = useTour(FILES_TOUR_STEPS, 'sdmo_tour_files_v1', {
+    ready: section === 5 && !loading,
+    autoStart: isSampleProject,
+  })
   // Password / lock state
   const [isUnlocked, setIsUnlocked] = useState(false)
   const [hasPassword, setHasPassword] = useState(false)

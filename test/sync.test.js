@@ -919,8 +919,14 @@ test('doLocalSync: two machines exchange full project state through a shared fol
   assert.ok(!fs.existsSync(path.join(folder, 'reviews-export.xlsx')), 'xlsx report is NOT auto-written during sync')
   const state = JSON.parse(fs.readFileSync(path.join(folder, sync.PROJECT_STATE_FILENAME), 'utf8'))
   assert.strictEqual(state.protocol_version, sync.SYNC_PROTOCOL_VERSION)
+  assert.strictEqual(state.layout, 'split-v1')
   assert.strictEqual(state.forms.length, 1)
-  assert.strictEqual(state.reviews.length, 1, 'reviews included in shared project state')
+  assert.strictEqual(state.reviews.length, 1, 'review index included in shared project state')
+  assert.ok(state.reviews[0].path.startsWith('reviews/'), 'review payload is split out of project-state')
+  assert.strictEqual(state.reviews[0].timestamps, undefined, 'project-state stores review metadata, not full timestamps')
+  assert.ok(fs.existsSync(path.join(folder, state.reviews[0].path)), 'split review payload written')
+  assert.ok(state.form_versions[0].path.startsWith('form-versions/'), 'form version payload is split out')
+  assert.ok(fs.existsSync(path.join(folder, state.form_versions[0].path)), 'split form version payload written')
 
   // Machine B — fresh placeholder project pulls A's structure + Alice's review.
   const b = makeDb()
@@ -941,7 +947,8 @@ test('doLocalSync: two machines exchange full project state through a shared fol
   addReview(b, bMediaId, 'Bob', { reviewer_uuid: 'uuid-B', status: 'in_progress' })
   await sync.doLocalSync(b, pb, folder, 'uuid-B', 'Bob')
   const stateAfterBob = JSON.parse(fs.readFileSync(path.join(folder, sync.PROJECT_STATE_FILENAME), 'utf8'))
-  assert.strictEqual(stateAfterBob.reviews.length, 2, "Bob's review merged into project state")
+  assert.strictEqual(stateAfterBob.reviews.length, 2, "Bob's review merged into project-state index")
+  assert.ok(stateAfterBob.reviews.every(r => fs.existsSync(path.join(folder, r.path))), 'all indexed review payloads exist')
 
   // A syncs again and now sees both reviewers.
   await sync.doLocalSync(a, pa, folder, 'uuid-A', 'Alice')
