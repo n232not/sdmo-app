@@ -27,6 +27,7 @@ Normal releases omit that marker. SDMo will still prompt users, but they can cho
 - Run `npm run build`.
 - Build release artifacts with `npm run dist:mac` and/or `npm run dist:win`.
 - Confirm Electron Builder generated update metadata files alongside the installers.
+- Mac in-app updates only work from Developer ID signed builds. For unsigned/test mac builds, distribute the DMG manually and leave `SDMO_ENABLE_MAC_AUTO_UPDATE` unset so SDMo does not offer a broken ShipIt update.
 
 ## 4. Migration Safety Test
 

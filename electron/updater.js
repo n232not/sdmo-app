@@ -87,6 +87,14 @@ function initUpdater() {
     return
   }
 
+  if (process.platform === 'darwin' && process.env.SDMO_ENABLE_MAC_AUTO_UPDATE !== '1') {
+    setStatus({
+      state: 'unavailable',
+      error: 'Mac in-app updates require a Developer ID signed build. Install the latest DMG manually.',
+    })
+    return
+  }
+
   autoUpdater.autoDownload = false
   autoUpdater.autoInstallOnAppQuit = false
 
