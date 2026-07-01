@@ -90,6 +90,18 @@ function emitSyncOnline(projectId) {
   try { _mainWindow.webContents.send('sync:online', { projectId }) } catch (_) {}
 }
 
+function emitGoogleDriveAccessRequired(projectId, fileIds) {
+  const ids = [...new Set((fileIds || []).filter(Boolean))]
+  if (ids.length === 0 || !_mainWindow || _mainWindow.isDestroyed?.()) return
+  try { _mainWindow.webContents.send('sync:googleDriveAccessRequired', { projectId, fileIds: ids }) } catch (_) {}
+}
+
+function emitGoogleDriveMetadataMissing(projectId, missing) {
+  const files = [...new Set((missing || []).filter(Boolean))]
+  if (files.length === 0 || !_mainWindow || _mainWindow.isDestroyed?.()) return
+  try { _mainWindow.webContents.send('sync:googleDriveMetadataMissing', { projectId, missing: files }) } catch (_) {}
+}
+
 // ─── Debounced auto-sync ──────────────────────────────────────────────────────
 
 function scheduleSync(projectId) {
@@ -901,6 +913,30 @@ function readLocalManifest(syncFolder) {
   try { return JSON.parse(fs.readFileSync(path.join(syncFolder, 'manifest.json'), 'utf8')) } catch { return null }
 }
 
+function newestNamedCloudFile(files, name) {
+  return [...(files || [])]
+    .filter(f => f?.name === name)
+    .sort((a, b) => String(b.modifiedTime || '').localeCompare(String(a.modifiedTime || '')))[0] || null
+}
+
+async function cleanupDuplicateCloudFiles(adapter, files, names) {
+  if (typeof adapter.trashFile !== 'function') return
+  for (const name of names) {
+    const matches = [...(files || [])]
+      .filter(f => f?.name === name)
+      .sort((a, b) => String(b.modifiedTime || '').localeCompare(String(a.modifiedTime || '')))
+    for (const duplicate of matches.slice(1)) {
+      try {
+        await adapter.trashFile(duplicate.id)
+        const idx = files.indexOf(duplicate)
+        if (idx >= 0) files.splice(idx, 1)
+      } catch (e) {
+        console.error(`[sync] failed to trash duplicate cloud file ${name}:`, e.message)
+      }
+    }
+  }
+}
+
 function isProtocolV2Manifest(manifest) {
   return (manifest?.protocol_version || 1) >= SYNC_PROTOCOL_VERSION
 }
@@ -1593,7 +1629,7 @@ async function readCloudFolderFiles(adapter, parentId, name) {
   return { folder, files: await adapter.listFiles(folder.id) }
 }
 
-async function hydrateSplitProjectStateCloud(stateData, adapter, folderId, { localIndex = null } = {}) {
+async function hydrateSplitProjectStateCloud(stateData, adapter, folderId, { localIndex = null, projectId = null } = {}) {
   if (stateData?.layout !== 'split-v1' && stateData?.layout !== 'hybrid-v1') return stateData
 
   const state = { ...stateData }
@@ -1601,19 +1637,36 @@ async function hydrateSplitProjectStateCloud(stateData, adapter, folderId, { loc
   state.media_type_versions = (stateData.media_type_versions || []).filter(v => !v.current)
   const formCatalog = formVersionCatalogFromState(stateData)
   if (usesSplitReviewPayloads(stateData)) {
-    const reviewsFolder = await readCloudFolderFiles(adapter, folderId, REVIEWS_DIR)
+    let reviewsFolder = { folder: null, files: [] }
+    try {
+      reviewsFolder = await readCloudFolderFiles(adapter, folderId, REVIEWS_DIR)
+    } catch (e) {
+      console.error('[sync] could not list cloud reviews folder:', e.message)
+    }
     const fileByPath = new Map()
     for (const file of reviewsFolder.files) fileByPath.set(`${REVIEWS_DIR}/${file.name}`, file.id)
-    const readPath = async (p) => {
+    const missingDriveFileIds = new Set()
+    const readPath = async (entry) => {
+      if (entry?.drive_file_id) {
+        try { return JSON.parse(await adapter.readFile(entry.drive_file_id)) } catch {
+          missingDriveFileIds.add(entry.drive_file_id)
+        }
+      }
+      const p = entry?.path || ''
       const id = fileByPath.get(p || '')
       if (!id) return null
       try { return JSON.parse(await adapter.readFile(id)) } catch { return null }
     }
     const reviews = []
     await runLimited(remoteReviewsNeedingHydration(stateData, localIndex), 6, async (entry) => {
-      const review = await readPath(entry.path)
+      const review = await readPath(entry)
       if (review) reviews.push(review)
     })
+    if (missingDriveFileIds.size > 0) {
+      const ids = [...missingDriveFileIds].join(',')
+      console.error(`[sync] missing Google Drive access for review file ids: ${ids}`)
+      if (projectId) emitGoogleDriveAccessRequired(projectId, [...missingDriveFileIds])
+    }
     state.reviews = reviews
       .filter(Boolean)
       .map(review => expandReviewFromSync(review, formCatalog))
@@ -1623,7 +1676,23 @@ async function hydrateSplitProjectStateCloud(stateData, adapter, folderId, { loc
   return state
 }
 
+function carryCloudReviewFileIds(indexState, previousIndex) {
+  if (!indexState?.reviews?.length || !previousIndex?.reviews?.length) return indexState
+  const idByPath = new Map()
+  for (const entry of previousIndex.reviews || []) {
+    if (entry?.path && entry?.drive_file_id) idByPath.set(entry.path, entry.drive_file_id)
+  }
+  return {
+    ...indexState,
+    reviews: indexState.reviews.map(entry => {
+      const driveFileId = entry.drive_file_id || idByPath.get(entry.path)
+      return driveFileId ? { ...entry, drive_file_id: driveFileId } : entry
+    }),
+  }
+}
+
 async function writeSplitProjectStateCloud(db, projectId, adapter, folderId, indexState = buildProjectStateIndexExport(db, projectId), previousIndex = null) {
+  indexState = carryCloudReviewFileIds(indexState, previousIndex)
   let reviewsDirId = null
   let existing = { [REVIEWS_DIR]: new Set() }
   if (usesSplitReviewPayloads(indexState)) {
@@ -1647,7 +1716,11 @@ async function writeSplitProjectStateCloud(db, projectId, adapter, folderId, ind
       addJob(REVIEWS_DIR, reviewsDirId, reviewIndexEntry(review), previousReviewHashes, review)
     }
   }
-  await runLimited(jobs, 4, job => adapter.writeFile(job.folderId, job.fileName, JSON.stringify(job.payload, null, 2)))
+  await runLimited(jobs, 4, async (job) => {
+    const id = await adapter.writeFile(job.folderId, job.fileName, JSON.stringify(job.payload, null, 2))
+    const entry = indexState.reviews?.find(r => path.basename(r.path) === job.fileName)
+    if (entry && id) entry.drive_file_id = id
+  })
   await adapter.writeFile(folderId, PROJECT_STATE_FILENAME, JSON.stringify(indexState, null, 2))
   await adapter.writeFile(folderId, 'manifest.json', JSON.stringify(buildManifest(db, projectId, hashOf(canonicalizeProjectState(indexState)))))
 }
@@ -1834,8 +1907,21 @@ function syncProjectStateLocal(db, projectId, syncFolder) {
   return { conflicts }
 }
 
-async function syncProjectStateCloud(db, projectId, adapter, folderId, allFiles) {
-  const manifestFile = allFiles.find(f => f.name === 'manifest.json')
+async function syncProjectStateCloud(db, projectId, adapter, folderId, allFiles, options = {}) {
+  await cleanupDuplicateCloudFiles(adapter, allFiles, [PROJECT_STATE_FILENAME, 'manifest.json'])
+  const manifestFile = newestNamedCloudFile(allFiles, 'manifest.json')
+  const stateFile = newestNamedCloudFile(allFiles, PROJECT_STATE_FILENAME)
+  const missingMetadata = [
+    !stateFile ? PROJECT_STATE_FILENAME : null,
+    !manifestFile ? 'manifest.json' : null,
+  ].filter(Boolean)
+  if (options.provider === 'googledrive' && missingMetadata.length > 0 && !options.allowCreateMissingMetadata) {
+    emitGoogleDriveMetadataMissing(projectId, missingMetadata)
+    const err = new Error(`Google Drive sync metadata is missing or not visible: ${missingMetadata.join(', ')}`)
+    err.code = 'GOOGLE_DRIVE_METADATA_MISSING'
+    err.missing = missingMetadata
+    throw err
+  }
   let manifest = null
   if (manifestFile) {
     try { manifest = JSON.parse(await adapter.readFile(manifestFile.id)) } catch {}
@@ -1845,13 +1931,12 @@ async function syncProjectStateCloud(db, projectId, adapter, folderId, allFiles)
   const localFingerprint = hashOf(canonicalizeProjectState(localIndex))
   if (cloudFingerprint && cloudFingerprint === localFingerprint) return { conflicts: [] }
 
-  const stateFile = allFiles.find(f => f.name === PROJECT_STATE_FILENAME)
   let conflicts = []
   let remoteIndex = null
 
   if (stateFile) {
     remoteIndex = JSON.parse(await adapter.readFile(stateFile.id))
-    const stateData = await hydrateSplitProjectStateCloud(remoteIndex, adapter, folderId, { localIndex })
+    const stateData = await hydrateSplitProjectStateCloud(remoteIndex, adapter, folderId, { localIndex, projectId })
     conflicts = mergeProjectStateImport(db, projectId, stateData, { merge: true }).conflicts
   } else {
     await migrateLegacyCloudFolderIntoDb(db, projectId, adapter, folderId, allFiles)
@@ -1889,11 +1974,11 @@ async function _doLocalSync(db, projectId, syncFolder, uuid, name) {
 
 // ─── Cloud sync ───────────────────────────────────────────────────────────────
 
-function doCloudSync(db, projectId, provider, folderId, uuid, name) {
-  return runExclusiveSync(projectId, () => _doCloudSync(db, projectId, provider, folderId, uuid, name))
+function doCloudSync(db, projectId, provider, folderId, uuid, name, options = {}) {
+  return runExclusiveSync(projectId, () => _doCloudSync(db, projectId, provider, folderId, uuid, name, options))
 }
 
-async function _doCloudSync(db, projectId, provider, folderId, uuid, name) {
+async function _doCloudSync(db, projectId, provider, folderId, uuid, name, options = {}) {
   if (!net.isOnline()) {
     if (!offlineProjects.has(projectId)) {
       offlineProjects.add(projectId)
@@ -1911,10 +1996,11 @@ async function _doCloudSync(db, projectId, provider, folderId, uuid, name) {
   const allFiles = await adapter.listFiles(folderId)
 
   try {
-    const { conflicts } = await syncProjectStateCloud(db, projectId, adapter, folderId, allFiles)
+    const { conflicts } = await syncProjectStateCloud(db, projectId, adapter, folderId, allFiles, { ...options, provider })
     emitConflicts(conflicts)
   } catch (e) {
     console.error('[sync] cloud project state sync failed:', e.message)
+    if (e.code === 'GOOGLE_DRIVE_METADATA_MISSING') throw e
   }
 
   // The Excel report is no longer uploaded on every cloud sync — the per-pass

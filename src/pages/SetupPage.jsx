@@ -271,6 +271,19 @@ export default function SetupPage() {
     setCloudConnecting(true)
     setCloudError('')
     try {
+      if (provider === 'googledrive') {
+        const picked = await api.cloudPickGoogleDriveFolder()
+        if (picked?.error) { setCloudError(picked.error); return }
+        const folder = picked?.folder
+        if (!folder?.id) { setCloudError('No Google Drive folder was selected'); return }
+        await api.cloudSelectFolder(Number(projectId), 'googledrive', folder.id)
+        if (folder.name) await api.setCloudFolderName(Number(projectId), folder.name)
+        const cs = await api.cloudStatus(Number(projectId))
+        setCloudStatus({ ...cs, folderName: folder.name || 'Google Drive Folder' })
+        setSyncMode('cloud')
+        return
+      }
+
       const result = provider === 'onedrive'
         ? await api.cloudConnectOneDrive()
         : await api.cloudConnectGoogleDrive()
@@ -282,6 +295,26 @@ export default function SetupPage() {
       handleLoadFolders(provider, null)
     } catch (e) {
       setCloudError(e.message || 'Connection failed')
+    } finally {
+      setCloudConnecting(false)
+    }
+  }
+
+  async function handlePickGoogleDriveFolder() {
+    setCloudConnecting(true)
+    setCloudError('')
+    try {
+      const picked = await api.cloudPickGoogleDriveFolder()
+      if (picked?.error) { setCloudError(picked.error); return }
+      const folder = picked?.folder
+      if (!folder?.id) { setCloudError('No Google Drive folder was selected'); return }
+      await api.cloudSelectFolder(Number(projectId), 'googledrive', folder.id)
+      if (folder.name) await api.setCloudFolderName(Number(projectId), folder.name)
+      const cs = await api.cloudStatus(Number(projectId))
+      setCloudStatus({ ...cs, folderName: folder.name || 'Google Drive Folder' })
+      setSyncMode('cloud')
+    } catch (e) {
+      setCloudError(e.message || 'Folder selection failed')
     } finally {
       setCloudConnecting(false)
     }
@@ -668,6 +701,7 @@ export default function SetupPage() {
               onSaveSyncFolder={handleSaveSyncFolder}
               onSelectSyncFolder={handleSelectSyncFolder}
               onCloudConnect={handleCloudConnect}
+              onPickGoogleDriveFolder={handlePickGoogleDriveFolder}
               onCancelAuth={handleCancelAuth}
               onCloudDisconnect={handleCloudDisconnect}
               onSelectCloudFolder={handleSelectCloudFolder}
@@ -2068,7 +2102,7 @@ function SyncSection({
   syncMode, syncFolder, setSyncFolder, cloudStatus, cloudConnecting, cloudError,
   showFolderPicker, setShowFolderPicker, folderPickerFolders, folderPickerParent, folderPickerLoading, folderBreadcrumbs,
   onSwitchMode, onSaveSyncFolder, onSelectSyncFolder,
-  onCloudConnect, onCancelAuth, onCloudDisconnect, onSelectCloudFolder, onDrillIn, onFolderBack, onFolderRefresh,
+  onCloudConnect, onPickGoogleDriveFolder, onCancelAuth, onCloudDisconnect, onSelectCloudFolder, onDrillIn, onFolderBack, onFolderRefresh,
   folderLinkInput, setFolderLinkInput, folderLinkError, folderLinkLoading, onFolderLinkSubmit,
   isOwner, hasPassword,
 }) {
@@ -2177,6 +2211,9 @@ function SyncSection({
               <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 4 }}>
                 Sign in to connect your cloud storage directly — no local sync needed.
               </p>
+              <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8, padding: '10px 12px', fontSize: 12, color: '#92400e', lineHeight: 1.5 }}>
+                OneDrive is recommended for direct cloud sync. Google Drive uses limited file access, so SDMo may ask you to approve access to project files again during sync.
+              </div>
               <button
                 className="btn btn-secondary"
                 onClick={() => onCloudConnect('onedrive')}
@@ -2191,7 +2228,7 @@ function SyncSection({
                 disabled={cloudConnecting}
                 style={{ justifyContent: 'flex-start', gap: 10 }}
               >
-                <Cloud size={16} /> {cloudConnecting ? 'Waiting for browser sign-in…' : 'Connect Google Drive'}
+                <Cloud size={16} /> {cloudConnecting ? 'Waiting for browser selection…' : 'Pick Folder with Google Drive'}
               </button>
               {cloudConnecting && (
                 <button className="btn btn-ghost btn-sm" style={{ alignSelf: 'flex-start' }} onClick={onCancelAuth}>
@@ -2201,11 +2238,18 @@ function SyncSection({
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              {cloudStatus.provider === 'googledrive' && (
+                <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8, padding: '10px 12px', fontSize: 12, color: '#92400e', lineHeight: 1.5 }}>
+                  OneDrive is recommended for direct cloud sync. Google Drive uses limited file access, so SDMo may ask you to approve access to project files again during sync.
+                </div>
+              )}
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', background: 'var(--bg-secondary)', borderRadius: 8 }}>
                 <Cloud size={16} color="var(--accent)" />
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: 13, fontWeight: 500 }}>{providerLabel}</div>
-                  <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{cloudStatus.email}</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                    {cloudStatus.email || (cloudStatus.provider === 'googledrive' ? 'Connected with Google Picker' : 'Connected')}
+                  </div>
                 </div>
                 <div style={{
                   width: 8, height: 8, borderRadius: '50%',
@@ -2219,18 +2263,31 @@ function SyncSection({
                   <span style={{ color: 'var(--text-secondary)' }}>
                     {cloudStatus.folderName ? <><strong>{cloudStatus.folderName}</strong></> : 'Sync folder selected'}
                   </span>
-                  <button className="btn btn-ghost btn-sm" style={{ marginLeft: 'auto' }} onClick={() => { setShowFolderPicker(true) }}>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    style={{ marginLeft: 'auto' }}
+                    onClick={() => {
+                      if (cloudStatus.provider === 'googledrive') onPickGoogleDriveFolder()
+                      else setShowFolderPicker(true)
+                    }}
+                  >
                     Change
                   </button>
                 </div>
               ) : (
-                <button className="btn btn-primary" onClick={() => setShowFolderPicker(true)}>
+                <button
+                  className="btn btn-primary"
+                  onClick={() => {
+                    if (cloudStatus.provider === 'googledrive') onPickGoogleDriveFolder()
+                    else setShowFolderPicker(true)
+                  }}
+                >
                   Select Sync Folder
                 </button>
               )}
 
               {/* Paste a share link to set/change the sync folder */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {cloudStatus.provider !== 'googledrive' && <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 <label style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 500 }}>
                   Or paste a shared folder link
                 </label>
@@ -2256,7 +2313,7 @@ function SyncSection({
                 {folderLinkError && (
                   <p style={{ fontSize: 12, color: 'var(--danger)', margin: 0 }}>{folderLinkError}</p>
                 )}
-              </div>
+              </div>}
 
               <button className="btn btn-ghost btn-sm" style={{ color: 'var(--danger)', alignSelf: 'flex-start' }} onClick={onCloudDisconnect}>
                 Disconnect

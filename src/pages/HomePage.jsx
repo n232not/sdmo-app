@@ -54,6 +54,10 @@ export default function HomePage() {
   const [joinCloudBreadcrumb, setJoinCloudBreadcrumb] = useState([])
   const [joinCloudFolders, setJoinCloudFolders] = useState([])
   const [joinCloudLoading, setJoinCloudLoading] = useState(false)
+  const [joinCloudMessage, setJoinCloudMessage] = useState('')
+  const [joinGoogleStateFolder, setJoinGoogleStateFolder] = useState(null)
+  const [joinFolderLinkInput, setJoinFolderLinkInput] = useState('')
+  const [joinFolderLinkLoading, setJoinFolderLinkLoading] = useState(false)
   const [joinError, setJoinError] = useState(null)
   const [joinLoading, setJoinLoading] = useState(false)
   const tour = useTour(TUTORIAL_STEPS, TUTORIAL_KEY)
@@ -86,6 +90,10 @@ export default function HomePage() {
     setJoinCloudProvider(null)
     setJoinCloudBreadcrumb([])
     setJoinCloudFolders([])
+    setJoinCloudMessage('')
+    setJoinGoogleStateFolder(null)
+    setJoinFolderLinkInput('')
+    setJoinFolderLinkLoading(false)
     setJoinError(null)
     setJoinLoading(false)
     setJoinCloudLoading(false)
@@ -111,6 +119,39 @@ export default function HomePage() {
   async function handleCloudConnect(provider) {
     setJoinCloudLoading(true)
     setJoinError(null)
+    setJoinCloudMessage('')
+    if (provider === 'googledrive') {
+      setJoinGoogleStateFolder(null)
+      setJoinCloudMessage('Google Drive step 1 of 2: choose the shared SDMo sync folder for this project.')
+      const picked = await api.cloudPickGoogleDriveFolder()
+      if (picked?.error) { setJoinError(picked.error); setJoinCloudLoading(false); return }
+      const folder = picked?.folder
+      if (!folder?.id) { setJoinError('No Google Drive folder was selected'); setJoinCloudLoading(false); return }
+
+      setJoinCloudMessage(`Selected "${folder.name || 'Google Drive folder'}". Checking for SDMo project files...`)
+      let result = await api.joinFromCloudFolder('googledrive', folder.id, folder.name || 'Google Drive Folder')
+      if (result?.error && result.error.includes('project-state.json')) {
+        setJoinGoogleStateFolder({ id: folder.id, name: folder.name || 'Google Drive Folder' })
+        setJoinCloudMessage(
+          `Google Drive needs one more file permission. Select project-state.json and manifest.json inside "${folder.name || 'the folder you just picked'}".`
+        )
+        setJoinCloudLoading(false)
+        return
+      }
+      setJoinCloudLoading(false)
+      setJoinCloudMessage('')
+      if (result?.ok) {
+        await load()
+        resetJoin()
+        setImportMediaFolder('')
+        setImportSyncFolder('')
+        setImportedProject({ id: result.projectId, name: result.projectName, syncHint: { mode: 'cloud', provider: 'googledrive' }, alreadySynced: true })
+      } else {
+        setJoinError(result?.error || 'Failed to join project')
+      }
+      return
+    }
+
     const result = provider === 'onedrive' ? await api.cloudConnectOneDrive() : await api.cloudConnectGoogleDrive()
     if (result?.error) { setJoinError(result.error); setJoinCloudLoading(false); return }
     setJoinCloudProvider(provider)
@@ -118,7 +159,47 @@ export default function HomePage() {
     setJoinCloudFolders(foldersResult?.folders || [])
     setJoinCloudBreadcrumb([])
     setJoinCloudLoading(false)
+    setJoinCloudMessage('')
     setJoinStep('cloud-browse')
+  }
+
+  async function handlePickGoogleDriveStateFile() {
+    const folder = joinGoogleStateFolder
+    if (!folder?.id) return
+    setJoinCloudLoading(true)
+    setJoinError(null)
+    setJoinCloudMessage(`Google Drive step 2 of 2: select project-state.json and manifest.json inside "${folder.name}". If Google shows other JSON files, do not pick those.`)
+    const pickedState = await api.cloudPickGoogleDriveFiles([])
+    if (pickedState?.error) { setJoinError(pickedState.error); setJoinCloudLoading(false); return }
+    const pickedFiles = pickedState.files || []
+    const stateFile = pickedFiles.find(f => f.name === 'project-state.json')
+    const manifestFile = pickedFiles.find(f => f.name === 'manifest.json')
+    if (!stateFile?.id) { setJoinError('No project-state.json file was selected'); setJoinCloudLoading(false); return }
+    if (!manifestFile?.id) {
+      setJoinError('Select both project-state.json and manifest.json from the sync folder you chose.')
+      setJoinCloudLoading(false)
+      return
+    }
+    for (const file of [stateFile, manifestFile]) {
+      if (Array.isArray(file.parents) && file.parents.length > 0 && !file.parents.includes(folder.id)) {
+        setJoinError(`${file.name} is not inside "${folder.name}". Select the metadata files from the folder you chose in step 1.`)
+        setJoinCloudLoading(false)
+        return
+      }
+    }
+    setJoinCloudMessage(`Selected project-state.json and manifest.json from "${folder.name}". Importing project...`)
+    const result = await api.joinFromCloudFolder('googledrive', folder.id, folder.name, stateFile.id)
+    setJoinCloudLoading(false)
+    setJoinCloudMessage('')
+    if (result?.ok) {
+      await load()
+      resetJoin()
+      setImportMediaFolder('')
+      setImportSyncFolder('')
+      setImportedProject({ id: result.projectId, name: result.projectName, syncHint: { mode: 'cloud', provider: 'googledrive' }, alreadySynced: true })
+    } else {
+      setJoinError(result?.error || 'Failed to join project')
+    }
   }
 
   async function handleCloudNavigate(folder) {
@@ -149,6 +230,30 @@ export default function HomePage() {
       setImportMediaFolder('')
       setImportSyncFolder('')
       setImportedProject({ id: result.projectId, name: result.projectName, syncHint: { mode: 'cloud', provider: joinCloudProvider }, alreadySynced: true })
+    } else {
+      setJoinError(result?.error || 'Failed to join project')
+    }
+  }
+
+  async function handleJoinOneDriveLink() {
+    const link = joinFolderLinkInput.trim()
+    if (!link || joinCloudProvider !== 'onedrive') return
+    setJoinFolderLinkLoading(true)
+    setJoinError(null)
+    const resolved = await api.cloudResolveFolderLink('onedrive', link)
+    if (resolved?.error) {
+      setJoinFolderLinkLoading(false)
+      setJoinError(resolved.error)
+      return
+    }
+    const result = await api.joinFromCloudFolder('onedrive', resolved.folderId, resolved.folderName || 'OneDrive Folder')
+    setJoinFolderLinkLoading(false)
+    if (result?.ok) {
+      await load()
+      resetJoin()
+      setImportMediaFolder('')
+      setImportSyncFolder('')
+      setImportedProject({ id: result.projectId, name: result.projectName, syncHint: { mode: 'cloud', provider: 'onedrive' }, alreadySynced: true })
     } else {
       setJoinError(result?.error || 'Failed to join project')
     }
@@ -521,9 +626,33 @@ export default function HomePage() {
                   disabled={joinCloudLoading}
                 >
                   <span style={{ fontSize: 18 }}>📁</span>
-                  <span style={{ fontWeight: 600, fontSize: 13 }}>Connect with Google Drive</span>
+                  <span style={{ fontWeight: 600, fontSize: 13 }}>Pick Folder with Google Drive</span>
                 </button>
-                {joinCloudLoading && <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>Connecting…</p>}
+                <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8, padding: '10px 12px', fontSize: 12, color: '#92400e', lineHeight: 1.5 }}>
+                  OneDrive is recommended for direct cloud sync. Google Drive uses limited file access, so SDMo may ask you to approve access to project files again during sync.
+                </div>
+                {joinGoogleStateFolder && (
+                  <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '10px 12px', fontSize: 13, color: '#1d4ed8', lineHeight: 1.5, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <div>
+                      <strong>One more Google Drive permission is needed.</strong>
+                      <br />
+                      In the next picker, choose <strong>project-state.json</strong> and <strong>manifest.json</strong> from <strong>{joinGoogleStateFolder.name}</strong>. If you see other JSON files elsewhere in Drive, ignore them.
+                    </div>
+                    <button
+                      className="btn btn-primary btn-sm"
+                      style={{ alignSelf: 'flex-start' }}
+                      onClick={handlePickGoogleDriveStateFile}
+                      disabled={joinCloudLoading}
+                    >
+                      Select project-state.json and manifest.json
+                    </button>
+                  </div>
+                )}
+                {joinCloudLoading && (
+                  <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px', fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                    {joinCloudMessage || 'Waiting for browser selection...'}
+                  </div>
+                )}
                 {joinError && <p style={{ color: 'var(--danger)', fontSize: 13 }}>{joinError}</p>}
               </div>
             )}
@@ -533,6 +662,30 @@ export default function HomePage() {
                 <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
                   Navigate to the project's sync folder in {providerLabel}, then click <strong>Join</strong>.
                 </p>
+                {joinCloudProvider === 'onedrive' && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <label style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 500 }}>
+                      Or paste a shared OneDrive folder link
+                    </label>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <input
+                        style={{ flex: 1, fontSize: 13 }}
+                        placeholder="https://onedrive.live.com/..."
+                        value={joinFolderLinkInput}
+                        onChange={e => setJoinFolderLinkInput(e.target.value)}
+                        onKeyDown={e => { if (e.key === 'Enter') handleJoinOneDriveLink() }}
+                        disabled={joinFolderLinkLoading || joinLoading}
+                      />
+                      <button
+                        className="btn btn-secondary btn-sm"
+                        onClick={handleJoinOneDriveLink}
+                        disabled={joinFolderLinkLoading || joinLoading || !joinFolderLinkInput.trim()}
+                      >
+                        {joinFolderLinkLoading ? '...' : 'Use Link'}
+                      </button>
+                    </div>
+                  </div>
+                )}
                 {/* Breadcrumb */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', fontSize: 12, color: 'var(--text-muted)' }}>
                   <button

@@ -103,6 +103,10 @@ export default function ProjectPage() {
   const [autolinkFolder, setAutolinkFolder] = useState('')
   const [autolinkResult, setAutolinkResult] = useState(null)
   const [syncOffline, setSyncOffline] = useState(false)
+  const [googleDriveAccessIds, setGoogleDriveAccessIds] = useState([])
+  const [grantingGoogleDriveAccess, setGrantingGoogleDriveAccess] = useState(false)
+  const [googleDriveMetadataMissing, setGoogleDriveMetadataMissing] = useState(null)
+  const [resolvingGoogleDriveMetadata, setResolvingGoogleDriveMetadata] = useState(false)
   const [sampleTourStarted, setSampleTourStarted] = useState(false)
   const query = new URLSearchParams(location.search)
   const isSampleTour = query.get('sampleTour') === '1'
@@ -188,6 +192,24 @@ export default function ProjectPage() {
     return () => api.offSyncOnline(subId)
   }, [projectId])
 
+  useEffect(() => {
+    const handler = (data) => {
+      if (String(data?.projectId) !== String(projectId)) return
+      setGoogleDriveAccessIds(data.fileIds || [])
+    }
+    const subId = api.onGoogleDriveAccessRequired(handler)
+    return () => api.offGoogleDriveAccessRequired(subId)
+  }, [projectId])
+
+  useEffect(() => {
+    const handler = (data) => {
+      if (String(data?.projectId) !== String(projectId)) return
+      setGoogleDriveMetadataMissing(data.missing || ['project-state.json', 'manifest.json'])
+    }
+    const subId = api.onGoogleDriveMetadataMissing(handler)
+    return () => api.offGoogleDriveMetadataMissing(subId)
+  }, [projectId])
+
   async function load() {
     setLoading(true)
     const [proj, encs, types, status, name] = await Promise.all([
@@ -263,6 +285,60 @@ export default function ProjectPage() {
     setSyncing(false)
     if (result.error) { setSyncError(result.error); return }
     setSyncError(null)
+    const [status, encs] = await Promise.all([
+      api.getSyncStatus(projectId),
+      api.listEncounters(projectId),
+    ])
+    setSyncStatus(status)
+    setEncounters(encs)
+  }
+
+  async function handleGrantGoogleDriveAccess() {
+    if (googleDriveAccessIds.length === 0) return
+    setGrantingGoogleDriveAccess(true)
+    const pick = await api.cloudPickGoogleDriveFiles(googleDriveAccessIds)
+    if (pick?.error) {
+      setGrantingGoogleDriveAccess(false)
+      setSyncError(pick.error)
+      return
+    }
+    setGoogleDriveAccessIds([])
+    await handleSyncNow()
+    setGrantingGoogleDriveAccess(false)
+  }
+
+  async function handleSelectGoogleDriveMetadata() {
+    setResolvingGoogleDriveMetadata(true)
+    setSyncError(null)
+    const pick = await api.cloudPickGoogleDriveFiles([])
+    if (pick?.error) {
+      setResolvingGoogleDriveMetadata(false)
+      setSyncError(pick.error)
+      return
+    }
+    const files = pick.files || []
+    const hasState = files.some(f => f.name === 'project-state.json')
+    const hasManifest = files.some(f => f.name === 'manifest.json')
+    if (!hasState || !hasManifest) {
+      setResolvingGoogleDriveMetadata(false)
+      setSyncError('Select both project-state.json and manifest.json from this project sync folder.')
+      return
+    }
+    setGoogleDriveMetadataMissing(null)
+    await handleSyncNow()
+    setResolvingGoogleDriveMetadata(false)
+  }
+
+  async function handleCreateGoogleDriveMetadata() {
+    setResolvingGoogleDriveMetadata(true)
+    setSyncError(null)
+    const result = await api.cloudSyncNow(projectId, { allowCreateMissingMetadata: true })
+    setResolvingGoogleDriveMetadata(false)
+    if (result?.error) {
+      setSyncError(result.error)
+      return
+    }
+    setGoogleDriveMetadataMissing(null)
     const [status, encs] = await Promise.all([
       api.getSyncStatus(projectId),
       api.listEncounters(projectId),
@@ -464,6 +540,43 @@ export default function ProjectPage() {
         <div style={{ background: '#fff7ed', borderBottom: '1px solid #fed7aa', padding: '8px 20px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#92400e' }}>
           <AlertTriangle size={14} style={{ flexShrink: 0 }} />
           Cloud connection expired — reconnect in <button className="btn btn-ghost btn-sm" style={{ color: '#92400e', textDecoration: 'underline', padding: '0 4px' }} onClick={() => navigate(`/project/${projectId}/setup?section=${SETUP_SECTIONS.SYNC}`)}>Setup → Sync</button>
+        </div>
+      )}
+      {googleDriveAccessIds.length > 0 && (
+        <div style={{ background: '#eff6ff', borderBottom: '1px solid #bfdbfe', padding: '8px 20px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#1d4ed8' }}>
+          <AlertTriangle size={14} style={{ flexShrink: 0 }} />
+          <span>New Google Drive review files need access before SDMo can import them.</span>
+          <button
+            className="btn btn-primary btn-sm"
+            style={{ marginLeft: 8 }}
+            onClick={handleGrantGoogleDriveAccess}
+            disabled={grantingGoogleDriveAccess}
+          >
+            {grantingGoogleDriveAccess ? 'Opening…' : 'Select Files'}
+          </button>
+        </div>
+      )}
+      {googleDriveMetadataMissing && (
+        <div style={{ background: '#fff7ed', borderBottom: '1px solid #fed7aa', padding: '8px 20px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#92400e', flexWrap: 'wrap' }}>
+          <AlertTriangle size={14} style={{ flexShrink: 0 }} />
+          <span>
+            Google Drive cannot see {googleDriveMetadataMissing.join(' and ')}. Select the existing files from this project sync folder, or create new metadata if this folder is intentionally empty.
+          </span>
+          <button
+            className="btn btn-secondary btn-sm"
+            style={{ marginLeft: 8 }}
+            onClick={handleSelectGoogleDriveMetadata}
+            disabled={resolvingGoogleDriveMetadata}
+          >
+            {resolvingGoogleDriveMetadata ? 'Opening...' : 'Select Existing Files'}
+          </button>
+          <button
+            className="btn btn-primary btn-sm"
+            onClick={handleCreateGoogleDriveMetadata}
+            disabled={resolvingGoogleDriveMetadata}
+          >
+            Create New Files
+          </button>
         </div>
       )}
       {pendingConfigData && (

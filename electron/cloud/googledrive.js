@@ -4,18 +4,19 @@
  * SETUP INSTRUCTIONS:
  * 1. Go to https://console.cloud.google.com → Create or select a project
  * 2. Enable the "Google Drive API": APIs & Services → Library → search "Google Drive API" → Enable
+ *    Also enable the "Google Picker API" for drive.file selection.
  * 3. Go to APIs & Services → OAuth consent screen:
  *    - User type: External → Create
  *    - App name: SDMo, fill required fields, save
- *    - Scopes: add ../auth/drive.file, email, profile
+ *    - Scopes: add ../auth/drive.file
  *    - Test users: add your email while in testing mode
  * 4. Go to APIs & Services → Credentials → Create Credentials → OAuth client ID:
  *    - Application type: Desktop app → Name: SDMo → Create
  *    - Copy the Client ID and Client Secret and paste below
  * 5. To publish (remove test-user restriction): complete OAuth consent screen verification
  *
- * Note: scope "drive.file" limits the app to only files it created — users cannot see
- * other Drive files and the app cannot access them. This is the correct scope for SDMo.
+ * Note: scope "drive.file" limits the app to files it created or files/folders
+ * the user explicitly selects/shares with the app through Google Picker.
  */
 
 const http = require('http')
@@ -27,17 +28,24 @@ const { getSettings, saveSettings } = require('../settings')
 const { GOOGLE_CLIENT_ID: CLIENT_ID, GOOGLE_CLIENT_SECRET: CLIENT_SECRET } = require('./credentials')
 
 const REDIRECT_URI = 'http://localhost:3878'
-const SCOPES = 'https://www.googleapis.com/auth/drive email profile'
+const SCOPES = 'https://www.googleapis.com/auth/drive.file'
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
 const AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth'
 const DRIVE_BASE = 'https://www.googleapis.com/drive/v3'
 const UPLOAD_BASE = 'https://www.googleapis.com/upload/drive/v3'
 
-async function startAuth(onServer) {
+async function startAuth(onServer, options = {}) {
   if (CLIENT_ID === 'YOUR_GOOGLE_CLIENT_ID_HERE') {
     throw new Error('Google Drive credentials not configured. See setup instructions in electron/cloud/googledrive.js')
   }
 
+  const picker = !!options.picker
+  const pickerOptions = {
+    allowMultiple: !!options.allowMultiple,
+    allowFolderSelection: options.allowFolderSelection !== false,
+    mimeTypes: options.mimeTypes || 'application/vnd.google-apps.folder',
+    fileIds: Array.isArray(options.fileIds) ? options.fileIds.filter(Boolean) : [],
+  }
   const state = crypto.randomBytes(8).toString('hex')
 
   return new Promise((resolve, reject) => {
@@ -46,12 +54,17 @@ async function startAuth(onServer) {
       if (url.searchParams.get('state') !== state) return
       const code = url.searchParams.get('code')
       const error = url.searchParams.get('error')
+      const pickedFileIds = (url.searchParams.get('picked_file_ids') || '')
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean)
 
       res.writeHead(200, { 'Content-Type': 'text/html' })
       res.end('<html><body><h2>SDMo: Google Drive connected! You can close this tab.</h2></body></html>')
       server.close()
 
       if (error || !code) return reject(new Error(error || 'No code returned'))
+      if (picker && pickedFileIds.length === 0) return reject(new Error('No Google Drive file or folder was selected'))
 
       try {
         const tokenRes = await fetch(TOKEN_ENDPOINT, {
@@ -68,20 +81,22 @@ async function startAuth(onServer) {
         const tokens = await tokenRes.json()
         if (tokens.error) throw new Error(tokens.error_description || tokens.error)
 
-        const userRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-          headers: { Authorization: `Bearer ${tokens.access_token}` },
-        })
-        const user = await userRes.json()
-
         saveSettings({
           googledrive_tokens: {
             access_token: tokens.access_token,
             refresh_token: tokens.refresh_token,
             expires_at: Date.now() + tokens.expires_in * 1000,
           },
-          googledrive_email: user.email || '',
+          googledrive_email: '',
         })
-        resolve({ email: user.email || '' })
+        if (picker) {
+          const picked = []
+          for (const id of pickedFileIds) picked.push(await getFileMetadata(id, tokens.access_token))
+          addGrantedFileIds(pickedFileIds)
+          resolve({ email: '', pickedFileIds, picked })
+        } else {
+          resolve({ email: '' })
+        }
       } catch (e) {
         reject(e)
       }
@@ -98,12 +113,43 @@ async function startAuth(onServer) {
         access_type: 'offline',
         prompt: 'consent',
       })
+      if (picker) {
+        params.set('trigger_onepick', 'true')
+        if (pickerOptions.allowMultiple) params.set('allow_multiple', 'true')
+        if (pickerOptions.allowFolderSelection) params.set('allow_folder_selection', 'true')
+        if (pickerOptions.mimeTypes) params.set('mimetypes', pickerOptions.mimeTypes)
+        if (pickerOptions.fileIds.length > 0) params.set('file_ids', pickerOptions.fileIds.join(','))
+      }
       shell.openExternal(`${AUTH_ENDPOINT}?${params}`)
     })
 
     server.on('error', reject)
     setTimeout(() => { server.close(); reject(new Error('Google Drive auth timed out')) }, 5 * 60 * 1000)
   })
+}
+
+async function pickFolder(onServer) {
+  const result = await startAuth(onServer, {
+    picker: true,
+    allowFolderSelection: true,
+    mimeTypes: 'application/vnd.google-apps.folder',
+  })
+  const folder = result.picked.find(f => f.isFolder) || result.picked[0]
+  if (!folder?.isFolder) throw new Error('Please select a Google Drive folder for SDMo sync')
+  return { email: result.email || '', folder }
+}
+
+async function pickFiles(onServer, options = {}) {
+  const result = await startAuth(onServer, {
+    picker: true,
+    allowFolderSelection: !!options.allowFolderSelection,
+    allowMultiple: options.allowMultiple !== false,
+    mimeTypes: options.mimeTypes || 'application/json',
+    fileIds: options.fileIds || [],
+  })
+  const files = result.picked.filter(f => !f.isFolder)
+  if (files.length === 0) throw new Error('No Google Drive files were selected')
+  return { email: result.email || '', files }
 }
 
 // Serialize refreshes so parallel Drive calls don't each fire a refresh at once.
@@ -168,13 +214,32 @@ async function driveRequest(method, endpoint, body, params) {
   return res.text()
 }
 
+function escapeDriveQueryValue(value) {
+  return String(value || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'")
+}
+
+async function getFileMetadata(fileId, accessToken) {
+  const token = accessToken || await ensureValidToken()
+  const url = new URL(`${DRIVE_BASE}/files/${fileId}`)
+  url.searchParams.set('fields', 'id,name,mimeType,parents')
+  const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } })
+  if (!res.ok) throw new Error(`Failed to get Drive file metadata ${fileId}: ${res.status}`)
+  const data = await res.json()
+  return {
+    id: data.id,
+    name: data.name,
+    parents: data.parents || [],
+    isFolder: data.mimeType === 'application/vnd.google-apps.folder',
+  }
+}
+
 async function listFiles(folderId) {
   const files = []
   let pageToken = null
   do {
     const data = await driveRequest('GET', '/files', undefined, {
-      q: `'${folderId}' in parents and trashed = false`,
-      fields: 'nextPageToken,files(id,name,mimeType)',
+      q: `'${escapeDriveQueryValue(folderId)}' in parents and trashed = false`,
+      fields: 'nextPageToken,files(id,name,mimeType,modifiedTime)',
       pageSize: '1000',
       ...(pageToken ? { pageToken } : {}),
     })
@@ -184,6 +249,7 @@ async function listFiles(folderId) {
   return files.map(f => ({
     id: f.id,
     name: f.name,
+    modifiedTime: f.modifiedTime || null,
     isFolder: f.mimeType === 'application/vnd.google-apps.folder',
   }))
 }
@@ -191,7 +257,7 @@ async function listFiles(folderId) {
 async function listFolders(folderId) {
   const token = await ensureValidToken()
   const parent = folderId || 'root'
-  const q = `'${parent}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`
+  const q = `'${escapeDriveQueryValue(parent)}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`
   const files = []
   let pageToken = null
   do {
@@ -214,6 +280,7 @@ async function readFile(fileId) {
     headers: { Authorization: `Bearer ${token}` },
   })
   if (!res.ok) throw new Error(`Failed to read file ${fileId}: ${res.status}`)
+  addGrantedFileIds([fileId])
   return res.text()
 }
 
@@ -222,8 +289,10 @@ async function writeFile(folderId, fileName, content, mimeType = 'application/js
 
   // Check if file already exists
   const existing = await driveRequest('GET', '/files', undefined, {
-    q: `name = '${fileName}' and '${folderId}' in parents and trashed = false`,
-    fields: 'files(id)',
+    q: `name = '${escapeDriveQueryValue(fileName)}' and '${escapeDriveQueryValue(folderId)}' in parents and trashed = false`,
+    fields: 'files(id,name,modifiedTime)',
+    orderBy: 'modifiedTime desc',
+    pageSize: '10',
   })
   const existingId = existing.files?.[0]?.id
 
@@ -267,12 +336,30 @@ async function writeFile(folderId, fileName, content, mimeType = 'application/js
     throw new Error(`Failed to write file ${fileName}: ${res.status} ${err}`)
   }
   const data = await res.json()
+  addGrantedFileIds([data.id])
+  for (const duplicate of (existing.files || []).slice(1)) {
+    try { await trashFile(duplicate.id) } catch (e) { console.error(`[googledrive] failed to trash duplicate ${fileName}:`, e.message) }
+  }
   return data.id
+}
+
+async function trashFile(fileId) {
+  const token = await ensureValidToken()
+  const res = await fetch(`${DRIVE_BASE}/files/${fileId}`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ trashed: true }),
+  })
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`Failed to trash Drive file ${fileId}: ${res.status} ${err}`)
+  }
+  return true
 }
 
 async function ensureFolder(parentId, name) {
   const token = await ensureValidToken()
-  const q = `name = '${name}' and '${parentId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`
+  const q = `name = '${escapeDriveQueryValue(name)}' and '${escapeDriveQueryValue(parentId)}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`
   const url = new URL(`${DRIVE_BASE}/files`)
   url.searchParams.set('q', q)
   url.searchParams.set('fields', 'files(id)')
@@ -292,6 +379,15 @@ function disconnect() {
   saveSettings({ googledrive_tokens: null, googledrive_email: null })
 }
 
+function addGrantedFileIds(fileIds = []) {
+  const ids = fileIds.filter(Boolean)
+  if (ids.length === 0) return
+  const settings = getSettings()
+  const current = new Set(settings.googledrive_granted_file_ids || [])
+  ids.forEach(id => current.add(id))
+  saveSettings({ googledrive_granted_file_ids: [...current] })
+}
+
 function getStatus() {
   const s = getSettings()
   const tokens = s.googledrive_tokens
@@ -300,4 +396,4 @@ function getStatus() {
   return { connected: true, email: s.googledrive_email || '', tokenExpired }
 }
 
-module.exports = { startAuth, listFiles, listFolders, readFile, writeFile, ensureFolder, disconnect, getStatus }
+module.exports = { startAuth, pickFolder, pickFiles, listFiles, listFolders, readFile, writeFile, ensureFolder, trashFile, disconnect, getStatus, addGrantedFileIds }

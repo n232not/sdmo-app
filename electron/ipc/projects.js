@@ -35,6 +35,12 @@ function requireUnlocked(db, projectId) {
   }
 }
 
+function newestNamedCloudFile(files, name) {
+  return [...(files || [])]
+    .filter(f => f?.name === name)
+    .sort((a, b) => String(b.modifiedTime || '').localeCompare(String(a.modifiedTime || '')))[0] || null
+}
+
 module.exports = function (ipcMain) {
   ipcMain.handle('projects:list', () => {
     const db = getDb()
@@ -428,18 +434,26 @@ module.exports = function (ipcMain) {
   })
 
   // Join project by connecting to an existing cloud sync folder
-  ipcMain.handle('sync:joinFromCloudFolder', async (_, provider, folderId, folderName) => {
+  ipcMain.handle('sync:joinFromCloudFolder', async (_, provider, folderId, folderName, stateFileId) => {
     const db = getDb()
     try {
       const { getAdapter } = require('../cloud/cloudSync')
       const adapter = getAdapter(provider)
-      const files = await adapter.listFiles(folderId)
-      const stateFile = files.find(f => f.name === PROJECT_STATE_FILENAME)
-      const configFile = files.find(f => f.name === 'project-config.json')
-      if (!stateFile && !configFile) {
+      let files = []
+      let listError = null
+      try {
+        files = await adapter.listFiles(folderId)
+      } catch (e) {
+        listError = e
+      }
+      const stateFile = newestNamedCloudFile(files, PROJECT_STATE_FILENAME)
+      const configFile = newestNamedCloudFile(files, 'project-config.json')
+      const pickedStateFileId = provider === 'googledrive' ? stateFileId : null
+      if (!stateFile && !configFile && !pickedStateFileId) {
+        if (listError) return { error: `Could not read this cloud folder: ${listError.message}` }
         return { error: `No ${PROJECT_STATE_FILENAME} or project-config.json found in this folder. Select the project's sync folder.` }
       }
-      const content = await adapter.readFile((stateFile || configFile).id)
+      const content = await adapter.readFile((stateFile || configFile)?.id || pickedStateFileId)
       let data = JSON.parse(content)
       if (!data?.sdmo_sync && !data?.sdmo) return { error: 'Not a valid SDMo sync folder' }
       const r = db.prepare(
@@ -486,7 +500,7 @@ module.exports = function (ipcMain) {
         const { getAdapter } = require('../cloud/cloudSync')
         const adapter = getAdapter(project.cloud_provider)
         const files = await adapter.listFiles(project.cloud_folder_id)
-        const mf = files.find(f => f.name === 'manifest.json')
+        const mf = newestNamedCloudFile(files, 'manifest.json')
         if (!mf) return { config_version: 0, local_version: localVersion }
         const data = JSON.parse(await adapter.readFile(mf.id))
         return { config_version: data.config_version || 0, local_version: localVersion }
@@ -495,7 +509,7 @@ module.exports = function (ipcMain) {
     return null
   })
 
-  ipcMain.handle('project:fetchStructure', async (_, projectId) => {
+  ipcMain.handle('project:fetchStructure', async (_, projectId, options = {}) => {
     const db = getDb()
     const project = db.prepare('SELECT sync_folder, cloud_provider, cloud_folder_id FROM projects WHERE id=?').get(projectId)
     if (!project) return { ok: false, error: 'Project not found' }
@@ -507,7 +521,7 @@ module.exports = function (ipcMain) {
         const { getAdapter } = require('../cloud/cloudSync')
         const adapter = getAdapter(project.cloud_provider)
         const files = await adapter.listFiles(project.cloud_folder_id)
-        await syncProjectStateCloud(db, projectId, adapter, project.cloud_folder_id, files)
+        await syncProjectStateCloud(db, projectId, adapter, project.cloud_folder_id, files, { ...(options || {}), provider: project.cloud_provider })
       }
       return { ok: true }
     } catch (e) {

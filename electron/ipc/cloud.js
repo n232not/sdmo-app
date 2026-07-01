@@ -53,6 +53,34 @@ module.exports = function (ipcMain) {
     }
   })
 
+  ipcMain.handle('cloud:pickGoogleDriveFolder', async () => {
+    try {
+      const googledrive = require('../cloud/googledrive')
+      const result = await googledrive.pickFolder((server) => setActiveAuthServer(server))
+      setActiveAuthServer(null)
+      return { ok: true, email: result.email || '', folder: result.folder }
+    } catch (e) {
+      setActiveAuthServer(null)
+      return { error: e.message }
+    }
+  })
+
+  ipcMain.handle('cloud:pickGoogleDriveFiles', async (_, fileIds) => {
+    try {
+      const googledrive = require('../cloud/googledrive')
+      const result = await googledrive.pickFiles((server) => setActiveAuthServer(server), {
+        fileIds: Array.isArray(fileIds) ? fileIds : [],
+        allowMultiple: true,
+        mimeTypes: 'application/json',
+      })
+      setActiveAuthServer(null)
+      return { ok: true, files: result.files }
+    } catch (e) {
+      setActiveAuthServer(null)
+      return { error: e.message }
+    }
+  })
+
   ipcMain.handle('cloud:cancelAuth', () => {
     if (_activeAuthServer) {
       try {
@@ -123,6 +151,7 @@ module.exports = function (ipcMain) {
   ipcMain.handle('cloud:resolveFolderLink', async (_, provider, link) => {
     try {
       let folderId = parseFolderLink(provider, link)
+      let folderName = ''
       let extractedFromOneDriveShare = false
       if (!folderId && provider === 'onedrive') {
         const onedrive = require('../cloud/onedrive')
@@ -131,6 +160,7 @@ module.exports = function (ipcMain) {
         if (!folderId) {
           const resolved = await onedrive.resolveFolderLink(link)
           folderId = resolved.id
+          folderName = resolved.name || ''
         }
       }
       if (!folderId) return { error: 'Could not extract folder ID from that link. Make sure you copied the full sharing URL.' }
@@ -145,6 +175,7 @@ module.exports = function (ipcMain) {
             const onedrive = require('../cloud/onedrive')
             const resolved = await onedrive.resolveFolderLink(link)
             folderId = resolved.id
+            folderName = resolved.name || folderName
             await adapter.listFiles(folderId)
           } catch (sharedError) {
             throw new Error(
@@ -158,20 +189,20 @@ module.exports = function (ipcMain) {
           throw verifyError
         }
       }
-      return { ok: true, folderId }
+      return { ok: true, folderId, folderName }
     } catch (e) {
       return { error: `Could not access folder: ${e.message}` }
     }
   })
 
-  ipcMain.handle('cloud:syncNow', async (_, projectId) => {
+  ipcMain.handle('cloud:syncNow', async (_, projectId, options = {}) => {
     try {
       const db = getDb()
       const project = db.prepare('SELECT cloud_provider, cloud_folder_id FROM projects WHERE id=?').get(projectId)
       if (!project?.cloud_provider || !project?.cloud_folder_id) return { error: 'Cloud sync not configured' }
       const uuid = getOrCreateUUID()
       const name = getProjectName(projectId) || uuid
-      await doCloudSync(db, projectId, project.cloud_provider, project.cloud_folder_id, uuid, name)
+      await doCloudSync(db, projectId, project.cloud_provider, project.cloud_folder_id, uuid, name, options || {})
       return { ok: true }
     } catch (e) {
       console.error('[cloud:syncNow] error:', e.message, e.stack)

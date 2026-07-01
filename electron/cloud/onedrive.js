@@ -240,7 +240,7 @@ async function resolveFolderLink(link) {
 async function listFiles(folderId) {
   const token = await ensureValidToken()
   const parent = decodeCloudItemId(folderId)
-  let url = `${itemUrl(folderId)}/children?$select=id,name,folder,file`
+  let url = `${itemUrl(folderId)}/children?$select=id,name,folder,file,lastModifiedDateTime`
   const items = []
   while (url) {
     const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
@@ -255,6 +255,7 @@ async function listFiles(folderId) {
   return items.map(item => ({
     id: parent.driveId ? encodeCloudItemId(parent.driveId, item.id) : item.id,
     name: item.name,
+    modifiedTime: item.lastModifiedDateTime || null,
     isFolder: !!item.folder,
   }))
 }

@@ -33,6 +33,8 @@ const workspaceClosedBridge = makeEventBridge('workspace:closed')
 const syncConflictBridge = makeEventBridge('sync:conflict')
 const syncOfflineBridge = makeEventBridge('sync:offline')
 const syncOnlineBridge = makeEventBridge('sync:online')
+const syncGoogleDriveAccessBridge = makeEventBridge('sync:googleDriveAccessRequired')
+const syncGoogleDriveMetadataBridge = makeEventBridge('sync:googleDriveMetadataMissing')
 const appUpdateBridge = makeEventBridge('app:updateStatus')
 
 contextBridge.exposeInMainWorld('api', {
@@ -120,7 +122,7 @@ contextBridge.exposeInMainWorld('api', {
   setProjectName: (projectId, name) => ipcRenderer.invoke('app:setProjectName', projectId, name),
   setCloudFolderName: (projectId, name) => ipcRenderer.invoke('app:setCloudFolderName', projectId, name),
   getCloudFolderName: (projectId) => ipcRenderer.invoke('app:getCloudFolderName', projectId),
-  fetchProjectStructure: (projectId) => ipcRenderer.invoke('project:fetchStructure', projectId),
+  fetchProjectStructure: (projectId, options) => ipcRenderer.invoke('project:fetchStructure', projectId, options),
   checkManifest: (projectId) => ipcRenderer.invoke('project:checkManifest', projectId),
 
   // Owner password
@@ -137,7 +139,7 @@ contextBridge.exposeInMainWorld('api', {
   loadProjectFile: (projectId) => ipcRenderer.invoke('sync:loadFile', projectId),
   importProjectAsNew: () => ipcRenderer.invoke('sync:importAsNew'),
   joinFromLocalFolder: (folderPath) => ipcRenderer.invoke('sync:joinFromLocalFolder', folderPath),
-  joinFromCloudFolder: (provider, folderId, folderName) => ipcRenderer.invoke('sync:joinFromCloudFolder', provider, folderId, folderName),
+  joinFromCloudFolder: (provider, folderId, folderName, stateFileId) => ipcRenderer.invoke('sync:joinFromCloudFolder', provider, folderId, folderName, stateFileId),
   exportExcel: (projectId) => ipcRenderer.invoke('export:excel', projectId),
   syncAcceptConfigUpdate: (projectId, configData) => ipcRenderer.invoke('sync:acceptConfigUpdate', projectId, configData),
 
@@ -154,15 +156,21 @@ contextBridge.exposeInMainWorld('api', {
   offSyncOffline: (id) => syncOfflineBridge.off(id),
   onSyncOnline: (cb) => syncOnlineBridge.on(cb),
   offSyncOnline: (id) => syncOnlineBridge.off(id),
+  onGoogleDriveAccessRequired: (cb) => syncGoogleDriveAccessBridge.on(cb),
+  offGoogleDriveAccessRequired: (id) => syncGoogleDriveAccessBridge.off(id),
+  onGoogleDriveMetadataMissing: (cb) => syncGoogleDriveMetadataBridge.on(cb),
+  offGoogleDriveMetadataMissing: (id) => syncGoogleDriveMetadataBridge.off(id),
 
   // Cloud sync
   cloudConnectOneDrive: () => ipcRenderer.invoke('cloud:connectOneDrive'),
   cloudConnectGoogleDrive: () => ipcRenderer.invoke('cloud:connectGoogleDrive'),
+  cloudPickGoogleDriveFolder: () => ipcRenderer.invoke('cloud:pickGoogleDriveFolder'),
+  cloudPickGoogleDriveFiles: (fileIds) => ipcRenderer.invoke('cloud:pickGoogleDriveFiles', fileIds),
   cloudDisconnect: (projectId) => ipcRenderer.invoke('cloud:disconnect', projectId),
   cloudStatus: (projectId) => ipcRenderer.invoke('cloud:status', projectId),
   cloudListFolders: (provider, parentId) => ipcRenderer.invoke('cloud:listFolders', provider, parentId),
   cloudSelectFolder: (projectId, provider, folderId) => ipcRenderer.invoke('cloud:selectFolder', projectId, provider, folderId),
-  cloudSyncNow: (projectId) => ipcRenderer.invoke('cloud:syncNow', projectId),
+  cloudSyncNow: (projectId, options) => ipcRenderer.invoke('cloud:syncNow', projectId, options),
   cloudCancelAuth: () => ipcRenderer.invoke('cloud:cancelAuth'),
   cloudResolveFolderLink: (provider, link) => ipcRenderer.invoke('cloud:resolveFolderLink', provider, link),
 

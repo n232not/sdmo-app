@@ -18,6 +18,10 @@ function isObject(value) {
   return value != null && typeof value === 'object' && !Array.isArray(value)
 }
 
+function isOptionalObject(value) {
+  return value == null || isObject(value)
+}
+
 function isIdArray(value) {
   return Array.isArray(value) && value.every(isIntLike)
 }
@@ -119,7 +123,7 @@ const contracts = {
   'app:setProjectName': [isIntLike, isString],
   'app:setCloudFolderName': [isIntLike, isString],
   'app:getCloudFolderName': [isIntLike],
-  'project:fetchStructure': [isIntLike],
+  'project:fetchStructure': [isIntLike, isOptionalObject],
   'project:checkManifest': [isIntLike],
 
   'sync:now': [isIntLike],
@@ -128,14 +132,14 @@ const contracts = {
   'sync:loadFile': [isIntLike],
   'sync:acceptConfigUpdate': [isIntLike, isObject],
   'sync:joinFromLocalFolder': [isString],
-  'sync:joinFromCloudFolder': [isString, isString, isOptionalString],
+  'sync:joinFromCloudFolder': [isString, isString, isOptionalString, isOptionalString],
   'export:excel': [isIntLike],
 
   'cloud:disconnect': [isIntLike],
   'cloud:status': [isIntLike],
   'cloud:listFolders': [isString, isOptionalString],
   'cloud:selectFolder': [isIntLike, isString, isString],
-  'cloud:syncNow': [isIntLike],
+  'cloud:syncNow': [isIntLike, isOptionalObject],
   'cloud:resolveFolderLink': [isString, isString],
 
   'fs:scanMediaFolder': [isString, isIntLike],
