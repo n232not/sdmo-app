@@ -16,13 +16,17 @@ let status = {
   currentVersion: app.getVersion(),
   updateInfo: null,
   required: false,
-  error: null,
+  error: app.isPackaged ? null : 'Development builds cannot install updates in-app. Use Check for Updates to compare against the latest GitHub release.',
   downloaded: false,
   checking: false,
 }
 
 function canInstallInApp() {
   return process.platform !== 'darwin' || process.env.SDMO_ENABLE_MAC_AUTO_UPDATE === '1'
+}
+
+function shouldUseManualReleaseCheck() {
+  return !app.isPackaged || !canInstallInApp()
 }
 
 function normalizeReleaseNotes(notes) {
@@ -152,7 +156,7 @@ function getUpdateStatus() {
     requiredVersion: status.updateInfo?.version || remembered?.version || null,
     updateInfo: publicInfo(status.updateInfo),
     rememberedRequiredUpdate: rememberedRequired ? remembered : null,
-    manualInstallOnly: app.isPackaged && !canInstallInApp(),
+    manualInstallOnly: shouldUseManualReleaseCheck(),
   }
 }
 
@@ -161,6 +165,11 @@ function initUpdater() {
 
   if (!app.isPackaged) {
     setStatus({ state: 'unavailable', error: 'Updates are only available in packaged builds.' })
+    return
+  }
+
+  if (!canInstallInApp()) {
+    setTimeout(() => checkGitHubRelease(), 5000)
     return
   }
 
@@ -237,9 +246,8 @@ function waitForUpdateCheckResult() {
 }
 
 async function checkForUpdates() {
-  if (!app.isPackaged) return getUpdateStatus()
   if (status.checking) return getUpdateStatus()
-  if (!canInstallInApp()) return checkGitHubRelease()
+  if (shouldUseManualReleaseCheck()) return checkGitHubRelease()
   const result = waitForUpdateCheckResult()
   setStatus({ state: 'checking', checking: true, error: null })
   try {

@@ -1278,7 +1278,7 @@ function AboutSection({ appInfo, updateStatus, busy, diagnosticsMessage, onCheck
           : updateStatus?.state === 'checking'
             ? 'Checking for updates'
             : updateStatus?.state === 'unavailable'
-              ? 'Updates unavailable in this build'
+              ? updateStatus?.error || 'Updates unavailable in this build'
               : updateStatus?.state === 'error'
                 ? 'Update check failed'
                 : 'Update status unknown'
