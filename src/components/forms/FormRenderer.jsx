@@ -1,5 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { ChevronDown, ChevronRight, Check } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+
+function resolveMarkdownAsset(src, assets = []) {
+  const id = String(src || '').replace(/^\.\/sdmo-image-/, '').replace(/^sdmo-image-/, '')
+  return assets.find(asset => asset.id === id)?.dataUrl || src
+}
 
 export default function FormRenderer({ schema, responses, onSave, readOnly, timestamps = [] }) {
   const sections = schema?.sections || []
@@ -355,32 +362,71 @@ function QLabel({ el }) {
   )
 }
 
+function isNA(value) {
+  return value === 'N/A' || (value && typeof value === 'object' && !Array.isArray(value) && value.__na === true)
+}
+
+function NAToggle({ selected, onChange, readOnly, compact = false }) {
+  return (
+    <button
+      disabled={readOnly}
+      onClick={() => !readOnly && onChange(selected ? null : 'N/A')}
+      style={{
+        alignSelf: compact ? 'stretch' : 'flex-start',
+        padding: compact ? '4px 8px' : '6px 10px',
+        border: `1.5px solid ${selected ? 'var(--accent)' : 'var(--border)'}`,
+        borderRadius: 6,
+        background: selected ? 'var(--accent-light)' : 'transparent',
+        color: selected ? 'var(--accent)' : 'var(--text-secondary)',
+        fontSize: compact ? 12 : 13,
+        fontWeight: selected ? 700 : 500,
+        cursor: readOnly ? 'default' : 'pointer',
+        fontFamily: 'var(--font)',
+      }}
+    >
+      N/A
+    </button>
+  )
+}
+
 function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
   if (el.type === 'text_block') {
     return (
-      <div style={{ color: 'var(--text-secondary)', fontSize: 12, lineHeight: 1.65, borderLeft: '2px solid var(--border)', paddingLeft: 10 }}>
-        {el.content}
+      <div className="prose form-markdown-block">
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          urlTransform={url => url}
+          components={{
+            img: ({ src, alt }) => <img src={resolveMarkdownAsset(src, el.assets || [])} alt={alt || ''} />,
+          }}
+        >
+          {el.content || ''}
+        </ReactMarkdown>
       </div>
     )
   }
 
   if (el.type === 'checkbox') {
-    const checked = !!value
+    const checked = value === true
+    const na = isNA(value)
     return (
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: readOnly ? 'default' : 'pointer' }}
-        onClick={() => !readOnly && onChange(!checked)}>
-        <div style={{
-          width: 18, height: 18, borderRadius: 4, flexShrink: 0, marginTop: 1,
-          border: `2px solid ${checked ? 'var(--accent)' : 'var(--border-strong)'}`,
-          background: checked ? 'var(--accent)' : 'transparent',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          transition: 'border-color 0.1s, background 0.1s',
-        }}>
-          {checked && <Check size={11} color="#fff" strokeWidth={3} />}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: readOnly ? 'default' : 'pointer', opacity: na ? 0.55 : 1 }}
+          onClick={() => !readOnly && onChange(checked ? false : true)}>
+          <div style={{
+            width: 18, height: 18, borderRadius: 4, flexShrink: 0, marginTop: 1,
+            border: `2px solid ${checked ? 'var(--accent)' : 'var(--border-strong)'}`,
+            background: checked ? 'var(--accent)' : 'transparent',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            transition: 'border-color 0.1s, background 0.1s',
+          }}>
+            {checked && <Check size={11} color="#fff" strokeWidth={3} />}
+          </div>
+          <span style={{ fontSize: 13, lineHeight: 1.5, fontWeight: 500 }}>
+            {el.label}{el.required && <span style={{ color: 'var(--danger)', marginLeft: 3 }}>*</span>}
+          </span>
         </div>
-        <span style={{ fontSize: 13, lineHeight: 1.5, fontWeight: 500 }}>
-          {el.label}{el.required && <span style={{ color: 'var(--danger)', marginLeft: 3 }}>*</span>}
-        </span>
+        {el.has_na && <NAToggle selected={na} onChange={onChange} readOnly={readOnly} />}
       </div>
     )
   }
@@ -424,11 +470,29 @@ function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
   }
 
   if (el.type === 'short_answer') {
-    return <div><QLabel el={el} /><FocusInput value={value} onChange={e => onChange(e.target.value)} placeholder={el.placeholder || ''} disabled={readOnly} /></div>
+    const na = isNA(value)
+    return (
+      <div>
+        <QLabel el={el} />
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <FocusInput value={na ? '' : value} onChange={e => onChange(e.target.value)} placeholder={el.placeholder || ''} disabled={readOnly || na} />
+          {el.has_na && <NAToggle selected={na} onChange={onChange} readOnly={readOnly} />}
+        </div>
+      </div>
+    )
   }
 
   if (el.type === 'paragraph') {
-    return <div><QLabel el={el} /><FocusTextarea value={value} onChange={e => onChange(e.target.value)} placeholder={el.placeholder || ''} disabled={readOnly} /></div>
+    const na = isNA(value)
+    return (
+      <div>
+        <QLabel el={el} />
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <FocusTextarea value={na ? '' : value} onChange={e => onChange(e.target.value)} placeholder={el.placeholder || ''} disabled={readOnly || na} />
+          {el.has_na && <NAToggle selected={na} onChange={onChange} readOnly={readOnly} />}
+        </div>
+      </div>
+    )
   }
 
   if (el.type === 'multiple_choice') {
@@ -439,6 +503,9 @@ function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
           {(el.options || []).map(opt => (
             <ChoiceButton key={opt} selected={value === opt} onClick={() => !readOnly && onChange(value === opt ? null : opt)} readOnly={readOnly} multiSelect={false}>{opt}</ChoiceButton>
           ))}
+          {el.has_na && (
+            <ChoiceButton selected={isNA(value)} onClick={() => !readOnly && onChange(isNA(value) ? null : 'N/A')} readOnly={readOnly} multiSelect={false}>N/A</ChoiceButton>
+          )}
         </div>
       </div>
     )
@@ -446,16 +513,20 @@ function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
 
   if (el.type === 'multiselect') {
     const selected = Array.isArray(value) ? value : []
+    const na = isNA(value)
     return (
       <div>
         <QLabel el={el} />
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           {(el.options || []).map(opt => (
-            <ChoiceButton key={opt} selected={selected.includes(opt)}
+            <ChoiceButton key={opt} selected={!na && selected.includes(opt)}
               onClick={() => { if (readOnly) return; const isSel = selected.includes(opt); onChange(isSel ? selected.filter(x => x !== opt) : [...selected, opt]) }}
               readOnly={readOnly} multiSelect={true}>{opt}
             </ChoiceButton>
           ))}
+          {el.has_na && (
+            <ChoiceButton selected={na} onClick={() => !readOnly && onChange(na ? [] : 'N/A')} readOnly={readOnly} multiSelect={false}>N/A</ChoiceButton>
+          )}
         </div>
       </div>
     )
@@ -480,6 +551,17 @@ function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
                 }}>{opt}</button>
             )
           })}
+          {el.has_na && (
+            <button disabled={readOnly} onClick={() => !readOnly && onChange(isNA(value) ? null : 'N/A')}
+              style={{
+                padding: '5px 12px', border: '1.5px solid',
+                borderColor: isNA(value) ? 'var(--accent)' : 'var(--border)', borderRadius: 20,
+                background: isNA(value) ? 'var(--accent-light)' : 'transparent',
+                color: isNA(value) ? 'var(--accent)' : 'var(--text)',
+                fontSize: 13, fontWeight: isNA(value) ? 600 : 400, cursor: readOnly ? 'default' : 'pointer',
+                transition: 'border-color 0.1s, background 0.1s, color 0.1s', fontFamily: 'var(--font)',
+              }}>N/A</button>
+          )}
         </div>
       </div>
     )
@@ -506,15 +588,16 @@ function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
     const min = el.min ?? 0
     const max = el.max ?? 100
     const step = el.step ?? 1
-    const val = value ?? min
+    const na = isNA(value)
+    const val = na ? min : (value ?? min)
     return (
       <div>
         <QLabel el={el} />
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, opacity: na ? 0.55 : 1 }}>
           <input type="range" min={min} max={max} step={step} value={val}
             onChange={e => !readOnly && onChange(Number(e.target.value))}
-            disabled={readOnly} style={{ flex: 1, accentColor: 'var(--accent)' }} />
-          <input type="number" value={val} min={min} max={max} step={step} disabled={readOnly}
+            disabled={readOnly || na} style={{ flex: 1, accentColor: 'var(--accent)' }} />
+          <input type="number" value={val} min={min} max={max} step={step} disabled={readOnly || na}
             onChange={e => { const n = Number(e.target.value); if (!isNaN(n)) onChange(Math.min(max, Math.max(min, n))) }}
             style={{
               width: 56, textAlign: 'center', fontWeight: 700, fontSize: 14,
@@ -527,6 +610,7 @@ function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
           <span>{el.low_label || min}</span><span>{el.high_label || max}</span>
         </div>
+        {el.has_na && <div style={{ marginTop: 6 }}><NAToggle selected={na} onChange={onChange} readOnly={readOnly} /></div>}
       </div>
     )
   }
@@ -535,7 +619,7 @@ function FormElement({ el, value, onChange, readOnly, timestamps = [] }) {
     return (
       <div>
         <QLabel el={el} />
-        <TimestampSelectInput timestamps={timestamps} value={value} onChange={onChange} readOnly={readOnly} />
+        <TimestampSelectInput timestamps={timestamps} value={value} onChange={onChange} readOnly={readOnly} allowNA={!!el.has_na} />
       </div>
     )
   }
@@ -610,7 +694,7 @@ const rowHeaderStyle = {
   whiteSpace: 'nowrap',
 }
 
-function TimestampSelectInput({ timestamps, value, onChange, readOnly, compact = false }) {
+function TimestampSelectInput({ timestamps, value, onChange, readOnly, compact = false, allowNA = false }) {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
   const ref = useRef(null)
@@ -629,6 +713,7 @@ function TimestampSelectInput({ timestamps, value, onChange, readOnly, compact =
   }
 
   function displayText() {
+    if (isNA(value)) return 'N/A'
     if (!value || typeof value !== 'object') return compact ? '—' : 'Select timestamp…'
     const time = fmtTs(value)
     return value.tag_label ? `${time} — ${value.tag_label}` : time
@@ -664,7 +749,7 @@ function TimestampSelectInput({ timestamps, value, onChange, readOnly, compact =
           border: `1.5px solid ${open ? 'var(--accent)' : 'var(--border)'}`,
           borderRadius: compact ? 4 : 8,
           background: 'var(--bg)',
-          color: (value && typeof value === 'object') ? 'var(--text)' : 'var(--text-muted)',
+          color: (isNA(value) || (value && typeof value === 'object')) ? 'var(--text)' : 'var(--text-muted)',
           fontSize: compact ? 12 : 13,
           cursor: readOnly ? 'default' : 'pointer',
           fontFamily: 'var(--font)',
@@ -707,6 +792,20 @@ function TimestampSelectInput({ timestamps, value, onChange, readOnly, compact =
                 onClick={() => { onChange(null); setOpen(false); setSearch('') }}
               >
                 Clear selection
+              </button>
+            )}
+            {allowNA && (
+              <button
+                className="dropdown-item"
+                style={{
+                  fontSize: 12,
+                  background: isNA(value) ? 'var(--accent-light)' : undefined,
+                  color: isNA(value) ? 'var(--accent)' : undefined,
+                  fontWeight: isNA(value) ? 600 : undefined,
+                }}
+                onClick={() => { onChange(isNA(value) ? null : 'N/A'); setOpen(false); setSearch('') }}
+              >
+                N/A
               </button>
             )}
             {filtered.length === 0 ? (
@@ -763,6 +862,7 @@ function TimestampSelectInput({ timestamps, value, onChange, readOnly, compact =
 }
 
 function TableCell({ col, value, onChange, readOnly, timestamps }) {
+  const na = isNA(value)
   const cellInputStyle = {
     width: '100%', padding: '4px 6px', fontSize: 12,
     border: '1px solid var(--border)', borderRadius: 4,
@@ -771,40 +871,47 @@ function TableCell({ col, value, onChange, readOnly, timestamps }) {
   }
   if (col.type === 'number') {
     return (
-      <input
-        type="number"
-        value={value ?? ''}
-        disabled={readOnly}
-        onChange={e => onChange(e.target.value === '' ? null : Number(e.target.value))}
-        style={cellInputStyle}
-      />
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <input
+          type="number"
+          value={na ? '' : (value ?? '')}
+          disabled={readOnly || na}
+          onChange={e => onChange(e.target.value === '' ? null : Number(e.target.value))}
+          style={cellInputStyle}
+        />
+        {col.has_na && <NAToggle selected={na} onChange={onChange} readOnly={readOnly} compact />}
+      </div>
     )
   }
   if (col.type === 'select') {
     return (
       <select
-        value={value || ''}
+        value={na ? 'N/A' : (value || '')}
         disabled={readOnly}
         onChange={e => onChange(e.target.value || null)}
         style={{ ...cellInputStyle, color: value ? 'var(--text)' : 'var(--text-muted)' }}
       >
         <option value="">—</option>
         {(col.options || []).map(opt => <option key={opt} value={opt}>{opt}</option>)}
+        {col.has_na && <option value="N/A">N/A</option>}
       </select>
     )
   }
   if (col.type === 'timestamp_select') {
     return (
-      <TimestampSelectInput timestamps={timestamps} value={value} onChange={onChange} readOnly={readOnly} compact />
+      <TimestampSelectInput timestamps={timestamps} value={value} onChange={onChange} readOnly={readOnly} compact allowNA={!!col.has_na} />
     )
   }
   return (
-    <input
-      type="text"
-      value={value || ''}
-      disabled={readOnly}
-      onChange={e => onChange(e.target.value || null)}
-      style={cellInputStyle}
-    />
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <input
+        type="text"
+        value={na ? '' : (value || '')}
+        disabled={readOnly || na}
+        onChange={e => onChange(e.target.value || null)}
+        style={cellInputStyle}
+      />
+      {col.has_na && <NAToggle selected={na} onChange={onChange} readOnly={readOnly} compact />}
+    </div>
   )
 }

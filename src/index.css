@@ -228,6 +228,23 @@ label { font-size: 13px; font-weight: 500; color: var(--text-secondary); display
 .prose a { color: var(--accent); text-decoration: none; }
 .prose a:hover { text-decoration: underline; }
 .prose hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+.prose img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  margin: 10px 0;
+}
+.form-markdown-block {
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.65;
+  background: var(--bg-secondary);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+}
+.form-markdown-block > :last-child { margin-bottom: 0; }
 
 /* Fullscreen: video fills container */
 :fullscreen video { width: 100% !important; height: 100% !important; object-fit: contain; }

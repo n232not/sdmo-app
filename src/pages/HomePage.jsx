@@ -4,6 +4,7 @@ import { Plus, FolderOpen, Trash2, Settings, ChevronRight, Calendar, User, Uploa
 import { api, formatDate } from '../lib/api'
 import Modal from '../components/ui/Modal'
 import useTour from '../components/ui/useTour'
+import appIcon from '../assets/app-icon-transparent.png'
 
 const TUTORIAL_KEY = 'sdmo_tutorial_v1'
 
@@ -216,10 +217,13 @@ export default function HomePage() {
       {/* Top bar */}
       <div style={{
         height: 52, display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '0 28px', borderBottom: '1px solid var(--border)',
+        padding: '0 20px', borderBottom: '1px solid var(--border)',
         WebkitAppRegion: 'drag',
       }}>
-        <span style={{ fontWeight: 700, fontSize: 15, letterSpacing: '-0.2px' }}>SDMo</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <img src={appIcon} alt="" style={{ width: 44, height: 44, objectFit: 'contain' }} />
+          <span style={{ fontWeight: 700, fontSize: 15, letterSpacing: '-0.2px' }}>SDMo</span>
+        </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, WebkitAppRegion: 'no-drag' }}>
           <button
             id="tut-name"

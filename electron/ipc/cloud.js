@@ -21,9 +21,8 @@ function parseFolderLink(provider, link) {
     if (/^[a-zA-Z0-9_-]{25,}$/.test(link.trim())) return link.trim()
   }
   if (provider === 'onedrive') {
-    // https://onedrive.live.com/...?id=ITEM_ID or sharepoint links
-    // Most reliable: extract driveItem ID from share URL via Graph API would be needed
-    // For now accept raw item ID
+    const idMatch = link.match(/[?&]id=([^&]+)/)
+    if (idMatch) return decodeURIComponent(idMatch[1])
     if (/^[A-Z0-9!]+$/i.test(link.trim())) return link.trim()
   }
   return null
@@ -123,12 +122,42 @@ module.exports = function (ipcMain) {
 
   ipcMain.handle('cloud:resolveFolderLink', async (_, provider, link) => {
     try {
-      const folderId = parseFolderLink(provider, link)
+      let folderId = parseFolderLink(provider, link)
+      let extractedFromOneDriveShare = false
+      if (!folderId && provider === 'onedrive') {
+        const onedrive = require('../cloud/onedrive')
+        folderId = await onedrive.extractFolderIdFromSharingLink(link)
+        extractedFromOneDriveShare = !!folderId
+        if (!folderId) {
+          const resolved = await onedrive.resolveFolderLink(link)
+          folderId = resolved.id
+        }
+      }
       if (!folderId) return { error: 'Could not extract folder ID from that link. Make sure you copied the full sharing URL.' }
       // Verify the folder is accessible
       const { getAdapter } = require('../cloud/cloudSync')
       const adapter = getAdapter(provider)
-      await adapter.listFiles(folderId) // throws if not accessible
+      try {
+        await adapter.listFiles(folderId) // throws if not accessible
+      } catch (verifyError) {
+        if (provider === 'onedrive' && extractedFromOneDriveShare) {
+          try {
+            const onedrive = require('../cloud/onedrive')
+            const resolved = await onedrive.resolveFolderLink(link)
+            folderId = resolved.id
+            await adapter.listFiles(folderId)
+          } catch (sharedError) {
+            throw new Error(
+              'OneDrive found a folder ID in that shared link, but Microsoft Graph cannot list it with SDMo\'s non-admin OneDrive permission. ' +
+              'Open the link in OneDrive with the same account, choose "Add shortcut to My files", then select that shortcut folder from SDMo\'s OneDrive folder picker. ' +
+              'You can also use Local Folder sync with the OneDrive desktop-synced folder. ' +
+              `Details: ${sharedError.message || verifyError.message}`
+            )
+          }
+        } else {
+          throw verifyError
+        }
+      }
       return { ok: true, folderId }
     } catch (e) {
       return { error: `Could not access folder: ${e.message}` }

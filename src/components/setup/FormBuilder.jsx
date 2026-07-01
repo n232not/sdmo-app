@@ -1,5 +1,7 @@
 import React, { useState } from 'react'
-import { ChevronLeft, Plus, Trash2, GripVertical, ChevronDown, ChevronRight, Copy } from 'lucide-react'
+import { ChevronLeft, Plus, Trash2, ChevronDown, ChevronRight, Copy, ImagePlus } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { api } from '../../lib/api'
 import Modal from '../ui/Modal'
 
@@ -15,7 +17,6 @@ const ELEMENT_TYPES = [
   { type: 'slider', label: 'Slider' },
   { type: 'timestamp_select', label: 'Timestamp Select' },
   { type: 'table', label: 'Table Grid' },
-  { type: 'text_block', label: 'Text Block' },
 ]
 
 const TABLE_COL_TYPES = [
@@ -30,6 +31,36 @@ function friendlySaveError(e) {
   const msg = e?.message || ''
   if (msg.includes('Project is locked')) return 'Project is locked. Go back to Setup and unlock the project before saving changes.'
   return msg || 'Save failed.'
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result)
+    reader.onerror = () => reject(reader.error || new Error('Could not read image.'))
+    reader.readAsDataURL(file)
+  })
+}
+
+function assetMarkdownSrc(id) {
+  return `./sdmo-image-${id}`
+}
+
+function resolveMarkdownAsset(src, assets = []) {
+  const id = String(src || '').replace(/^\.\/sdmo-image-/, '').replace(/^sdmo-image-/, '')
+  return assets.find(asset => asset.id === id)?.dataUrl || src
+}
+
+function shortenMarkdownImageDataUrls(markdown, assets = []) {
+  const addedAssets = []
+  const next = String(markdown || '').replace(/!\[([^\]]*)\]\((data:image\/[^)\s]+)\)/g, (match, alt, dataUrl) => {
+    const existing = assets.find(asset => asset.dataUrl === dataUrl) || addedAssets.find(asset => asset.dataUrl === dataUrl)
+    if (existing) return `![${alt}](${assetMarkdownSrc(existing.id)})`
+    const id = newId()
+    addedAssets.push({ id, name: alt || 'image', dataUrl })
+    return `![${alt || 'image'}](${assetMarkdownSrc(id)})`
+  })
+  return { content: next, addedAssets }
 }
 
 export default function FormBuilder({ projectId, form, onSave, onCancel, onLocked }) {
@@ -264,23 +295,28 @@ function SectionEditor({ section, collapsed, onToggle, onChange, onRemove, onDup
             <ElementEditor key={el.id} el={el} onChange={changes => onUpdateElement(el.id, changes)} onRemove={() => onRemoveElement(el.id)} />
           ))}
 
-          <div ref={dropdownRef} style={{ position: 'relative', display: 'inline-block' }}>
-            <button className="btn btn-ghost btn-sm" onClick={() => setShowAddEl(s => !s)}>
-              <Plus size={13} /> Add Question
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <div ref={dropdownRef} style={{ position: 'relative', display: 'inline-block' }}>
+              <button className="btn btn-ghost btn-sm" onClick={() => setShowAddEl(s => !s)}>
+                <Plus size={13} /> Add Question
+              </button>
+              {showAddEl && (
+                <div style={{
+                  position: 'absolute', top: '100%', left: 0, zIndex: 9999,
+                  background: 'var(--bg)', border: '1px solid var(--border)',
+                  borderRadius: 8, boxShadow: 'var(--shadow-lg)', overflow: 'hidden', minWidth: 180, marginTop: 4,
+                }}>
+                  {ELEMENT_TYPES.map(et => (
+                    <button key={et.type} className="dropdown-item" onClick={() => { onAddElement(et.type); setShowAddEl(false) }}>
+                      {et.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <button className="btn btn-ghost btn-sm" onClick={() => onAddElement('text_block')}>
+              <ImagePlus size={13} /> Add Text/Image as Markdown
             </button>
-            {showAddEl && (
-              <div style={{
-                position: 'absolute', top: '100%', left: 0, zIndex: 9999,
-                background: 'var(--bg)', border: '1px solid var(--border)',
-                borderRadius: 8, boxShadow: 'var(--shadow-lg)', overflow: 'hidden', minWidth: 180, marginTop: 4,
-              }}>
-                {ELEMENT_TYPES.map(et => (
-                  <button key={et.type} className="dropdown-item" onClick={() => { onAddElement(et.type); setShowAddEl(false) }}>
-                    {et.label}
-                  </button>
-                ))}
-              </div>
-            )}
           </div>
         </div>
       )}
@@ -295,10 +331,14 @@ function ElementEditor({ el, onChange, onRemove }) {
     return (
       <div style={{ border: '1px solid var(--border)', borderRadius: 6, padding: 12 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-          <span className="text-secondary text-sm">Text Block</span>
+          <span className="text-secondary text-sm">Markdown Text / Images</span>
           <button className="btn btn-ghost btn-icon btn-sm" onClick={onRemove}><Trash2 size={12} /></button>
         </div>
-        <textarea value={el.content || ''} onChange={e => onChange({ content: e.target.value })} placeholder="Instructional text…" rows={2} style={{ fontSize: 13 }} />
+        <MarkdownBlockEditor
+          value={el.content || ''}
+          assets={el.assets || []}
+          onChange={changes => onChange(changes)}
+        />
       </div>
     )
   }
@@ -332,6 +372,13 @@ function ElementEditor({ el, onChange, onRemove }) {
         <button className="btn btn-ghost btn-icon btn-sm" onClick={onRemove}><Trash2 size={12} /></button>
       </div>
 
+      {el.type !== 'table' && (
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', marginBottom: 0 }}>
+          <input type="checkbox" checked={!!el.has_na} onChange={e => onChange({ has_na: e.target.checked })} />
+          Include N/A option
+        </label>
+      )}
+
       {(el.type === 'multiple_choice' || el.type === 'multiselect' || el.type === 'rating') && (
         <OptionsEditor options={el.options || []} onChange={opts => onChange({ options: opts })} />
       )}
@@ -354,10 +401,6 @@ function ElementEditor({ el, onChange, onRemove }) {
               <input value={el.high_label || ''} onChange={e => onChange({ high_label: e.target.value })} placeholder="e.g. Strongly Agree" style={{ height: 32, fontSize: 13 }} />
             </div>
           </div>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', marginBottom: 0 }}>
-            <input type="checkbox" checked={!!el.has_na} onChange={e => onChange({ has_na: e.target.checked })} />
-            Include N/A option
-          </label>
         </div>
       )}
 
@@ -385,10 +428,6 @@ function ElementEditor({ el, onChange, onRemove }) {
               <input value={el.high_label || ''} onChange={e => onChange({ high_label: e.target.value })} placeholder="e.g. Strongly Agree" style={{ height: 32, fontSize: 13 }} />
             </div>
           </div>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', marginBottom: 0 }}>
-            <input type="checkbox" checked={!!el.has_na} onChange={e => onChange({ has_na: e.target.checked })} />
-            Include N/A option
-          </label>
           <LikertGroupItemsEditor items={el.items || []} onChange={items => onChange({ items })} />
         </div>
       )}
@@ -424,6 +463,159 @@ function ElementEditor({ el, onChange, onRemove }) {
           onColumnsChange={columns => onChange({ columns })}
         />
       )}
+    </div>
+  )
+}
+
+function MarkdownBlockEditor({ value, assets, onChange }) {
+  const textareaRef = React.useRef(null)
+  const fileInputRef = React.useRef(null)
+  const [imageError, setImageError] = useState('')
+
+  React.useEffect(() => {
+    if (!value.includes('data:image/')) return
+    const shortened = shortenMarkdownImageDataUrls(value, assets)
+    if (shortened.addedAssets.length === 0 && shortened.content === value) return
+    onChange({ content: shortened.content, assets: [...assets, ...shortened.addedAssets] })
+  }, [value, assets, onChange])
+
+  function insertMarkdown(markdown, extraChanges = {}) {
+    const textarea = textareaRef.current
+    if (!textarea) {
+      onChange({ ...extraChanges, content: `${value || ''}${markdown}` })
+      return
+    }
+    const currentValue = textarea.value
+    const start = textarea.selectionStart ?? value.length
+    const end = textarea.selectionEnd ?? value.length
+    const prefix = currentValue.slice(0, start)
+    const suffix = currentValue.slice(end)
+    const needsLeadingBreak = prefix && !prefix.endsWith('\n') ? '\n' : ''
+    const needsTrailingBreak = suffix && !suffix.startsWith('\n') ? '\n' : ''
+    const next = `${prefix}${needsLeadingBreak}${markdown}${needsTrailingBreak}${suffix}`
+    const cursor = prefix.length + needsLeadingBreak.length + markdown.length
+    onChange({ ...extraChanges, content: next })
+    textarea.value = next
+    textarea.setSelectionRange(cursor, cursor)
+    requestAnimationFrame(() => {
+      textarea.focus()
+      textarea.setSelectionRange(cursor, cursor)
+    })
+  }
+
+  async function insertImageFile(file) {
+    if (!file) return
+    if (!file.type?.startsWith('image/')) {
+      setImageError('Only image files can be added here.')
+      return
+    }
+    setImageError('')
+    try {
+      const dataUrl = await fileToDataUrl(file)
+      const safeName = (file.name || 'pasted-image').replace(/[\]\n\r]/g, ' ').trim() || 'image'
+      const id = newId()
+      insertMarkdown(`![${safeName}](${assetMarkdownSrc(id)})`, {
+        assets: [...assets, { id, name: safeName, dataUrl }],
+      })
+    } catch (e) {
+      console.error('[FormBuilder] image insert failed:', e)
+      setImageError('Could not add that image.')
+    }
+  }
+
+  async function handlePaste(e) {
+    const imageItem = Array.from(e.clipboardData?.items || []).find(item => item.type?.startsWith('image/'))
+    if (!imageItem) return
+    e.preventDefault()
+    await insertImageFile(imageItem.getAsFile())
+  }
+
+  async function handleFiles(files) {
+    const imageFiles = Array.from(files || []).filter(file => file.type?.startsWith('image/'))
+    if (imageFiles.length === 0) {
+      if ((files || []).length > 0) setImageError('Only image files can be added here.')
+      return
+    }
+    setImageError('')
+    try {
+      const addedAssets = []
+      const markdown = []
+      for (const file of imageFiles) {
+        const dataUrl = await fileToDataUrl(file)
+        const safeName = (file.name || 'uploaded-image').replace(/[\]\n\r]/g, ' ').trim() || 'image'
+        const id = newId()
+        addedAssets.push({ id, name: safeName, dataUrl })
+        markdown.push(`![${safeName}](${assetMarkdownSrc(id)})`)
+      }
+      insertMarkdown(markdown.join('\n'), { assets: [...assets, ...addedAssets] })
+    } catch (e) {
+      console.error('[FormBuilder] image insert failed:', e)
+      setImageError('Could not add one of those images.')
+    }
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <textarea
+        ref={textareaRef}
+        value={value}
+        onChange={e => {
+          const shortened = shortenMarkdownImageDataUrls(e.target.value, assets)
+          onChange({
+            content: shortened.content,
+            ...(shortened.addedAssets.length > 0 ? { assets: [...assets, ...shortened.addedAssets] } : {}),
+          })
+        }}
+        onPaste={handlePaste}
+        placeholder="Write markdown. Paste or upload images to insert them here."
+        rows={5}
+        style={{ fontSize: 13, minHeight: 130 }}
+      />
+      <div
+        className="prose markdown-live-preview"
+        style={{
+          minHeight: 120,
+          padding: 12,
+          border: '1px solid var(--border)',
+          borderRadius: 6,
+          background: 'var(--bg-secondary)',
+          fontSize: 13,
+        }}
+      >
+        {value ? (
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            urlTransform={url => url}
+            components={{
+              img: ({ src, alt }) => <img src={resolveMarkdownAsset(src, assets)} alt={alt || ''} />,
+            }}
+          >
+            {value}
+          </ReactMarkdown>
+        ) : (
+          <span className="text-muted">Live preview</span>
+        )}
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+        <button className="btn btn-secondary btn-sm" type="button" onClick={() => fileInputRef.current?.click()}>
+          <ImagePlus size={13} /> Upload Image
+        </button>
+        <span className="text-secondary text-sm" style={{ textAlign: 'right' }}>
+          Supports markdown plus pasted or uploaded images.
+        </span>
+      </div>
+      {imageError && <div style={{ color: 'var(--danger)', fontSize: 12 }}>{imageError}</div>}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        multiple
+        onChange={e => {
+          handleFiles(e.target.files)
+          e.target.value = ''
+        }}
+        style={{ display: 'none' }}
+      />
     </div>
   )
 }
@@ -486,12 +678,20 @@ function TableEditor({ rows, columns, onRowsChange, onColumnsChange }) {
                 </select>
                 <button className="btn btn-ghost btn-icon btn-sm" onClick={() => onColumnsChange(columns.filter((_, j) => j !== i))}><Trash2 size={12} /></button>
               </div>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', marginBottom: 0 }}>
+                <input
+                  type="checkbox"
+                  checked={!!col.has_na}
+                  onChange={e => { const c = columns.map((cc, j) => j === i ? { ...cc, has_na: e.target.checked } : cc); onColumnsChange(c) }}
+                />
+                Include N/A option
+              </label>
               {col.type === 'select' && (
                 <OptionsEditor options={col.options || []} onChange={opts => { const c = columns.map((cc, j) => j === i ? { ...cc, options: opts } : cc); onColumnsChange(c) }} />
               )}
             </div>
           ))}
-          <button className="btn btn-ghost btn-sm" onClick={() => onColumnsChange([...columns, { id: newId(), label: `Column ${columns.length + 1}`, type: 'text' }])} style={{ alignSelf: 'flex-start', fontSize: 12 }}>
+          <button className="btn btn-ghost btn-sm" onClick={() => onColumnsChange([...columns, { id: newId(), label: `Column ${columns.length + 1}`, type: 'text', has_na: false }])} style={{ alignSelf: 'flex-start', fontSize: 12 }}>
             <Plus size={12} /> Add Column
           </button>
         </div>
@@ -524,15 +724,15 @@ function LikertGroupItemsEditor({ items, onChange }) {
 }
 
 function makeElement(type) {
-  const base = { id: newId(), type, label: '', required: false }
+  const base = { id: newId(), type, label: '', required: false, has_na: false }
   if (type === 'multiple_choice' || type === 'multiselect') return { ...base, options: ['Option 1', 'Option 2'] }
   if (type === 'rating') return { ...base, options: ['Option 1', 'Option 2', 'Option 3', 'Option 4'] }
   if (type === 'likert') return { ...base, scale: 5, low_label: '', high_label: '', has_na: false }
   if (type === 'likert_group') return { id: newId(), type: 'likert_group', label: '', description: '', scale: 5, low_label: '', high_label: '', has_na: false, items: [{ id: newId(), label: '' }] }
-  if (type === 'checkbox') return { id: newId(), type: 'checkbox', label: '', required: false }
+  if (type === 'checkbox') return { id: newId(), type: 'checkbox', label: '', required: false, has_na: false }
   if (type === 'slider') return { ...base, min: 0, max: 100, step: 1, low_label: '', high_label: '' }
-  if (type === 'text_block') return { id: newId(), type: 'text_block', content: '' }
+  if (type === 'text_block') return { id: newId(), type: 'text_block', content: '', assets: [] }
   if (type === 'timestamp_select') return base
-  if (type === 'table') return { ...base, rows: ['Row 1', 'Row 2'], columns: [{ id: newId(), label: 'Column 1', type: 'text' }] }
+  if (type === 'table') return { ...base, has_na: false, rows: ['Row 1', 'Row 2'], columns: [{ id: newId(), label: 'Column 1', type: 'text', has_na: false }] }
   return base
 }

@@ -1978,6 +1978,11 @@ function buildReviewsWorkbook(db, projectId) {
       return out
     }
     if (typeof value === 'object') {
+      if (value.__na === true) {
+        out['Value'] = 'N/A'
+        out['Value Label'] = 'N/A'
+        return out
+      }
       if (value.time_seconds != null) {
         out['Value Time (seconds)'] = value.time_seconds
         out['Value Time'] = fmtTime(value.time_seconds)
@@ -1997,22 +2002,25 @@ function buildReviewsWorkbook(db, projectId) {
   }
 
   function validValuesForElement(el) {
-    if (el.type === 'multiple_choice' || el.type === 'multiselect') return optionText(el.options)
-    if (el.type === 'rating') return `1-${el.max || 5}`
-    if (el.type === 'likert') return `1-${el.scale || 5}${el.has_na ? ', N/A' : ''}`
-    if (el.type === 'likert_group') return `1-${el.scale || 5}${el.has_na ? ', N/A' : ''}`
-    if (el.type === 'slider') return `${el.min ?? 0}-${el.max ?? 100}`
-    if (el.type === 'checkbox') return 'Yes, No'
-    if (el.type === 'timestamp_select') return 'Time in seconds plus optional tag label'
-    if (el.type === 'short_answer' || el.type === 'paragraph') return 'Free text'
+    const withNA = (text) => `${text}${el.has_na ? ', N/A' : ''}`
+    if (el.type === 'multiple_choice' || el.type === 'multiselect') return withNA(optionText(el.options))
+    if (el.type === 'rating') return withNA(optionText(el.options))
+    if (el.type === 'likert') return withNA(`1-${el.scale || 5}`)
+    if (el.type === 'likert_group') return withNA(`1-${el.scale || 5}`)
+    if (el.type === 'slider') return withNA(`${el.min ?? 0}-${el.max ?? 100}`)
+    if (el.type === 'checkbox') return withNA('Yes, No')
+    if (el.type === 'timestamp_select') return withNA('Time in seconds plus optional tag label')
+    if (el.type === 'short_answer' || el.type === 'paragraph') return withNA('Free text')
+    if (el.type === 'table') return 'Table grid'
     return ''
   }
 
   function validValuesForTableColumn(col) {
-    if (col.type === 'select') return optionText(col.options)
-    if (col.type === 'number') return 'Number'
-    if (col.type === 'timestamp_select') return 'Time in seconds plus optional tag label'
-    return 'Free text'
+    const withNA = (text) => `${text}${col.has_na ? ', N/A' : ''}`
+    if (col.type === 'select') return withNA(optionText(col.options))
+    if (col.type === 'number') return withNA('Number')
+    if (col.type === 'timestamp_select') return withNA('Time in seconds plus optional tag label')
+    return withNA('Free text')
   }
 
   // Auto-size columns from header + sampled cell lengths and add a header filter
@@ -2276,8 +2284,9 @@ function buildReviewsWorkbook(db, projectId) {
               // Split timestamp into Time + Tag columns so each is independently analyzable
               pushCol(form, section, el, { ...componentBase, id: `${componentBase.id}.time`, label: `${componentBase.label}: Time` }, `${cellBase}: Time`, (resp) => {
                 const v = getCell(resp)
+                if (v === 'N/A') return 'N/A'
                 return (v && typeof v === 'object' && v.time_seconds != null) ? fmtTime(v.time_seconds) : ''
-              }, 'table / timestamp', 'M:SS')
+              }, 'table / timestamp', col.has_na ? 'M:SS, N/A' : 'M:SS')
               pushCol(form, section, el, { ...componentBase, id: `${componentBase.id}.tag`, label: `${componentBase.label}: Tag` }, `${cellBase}: Tag`, (resp) => {
                 const v = getCell(resp)
                 return (v && typeof v === 'object') ? (v.tag_label || '') : ''
@@ -2287,6 +2296,7 @@ function buildReviewsWorkbook(db, projectId) {
                 const v = getCell(resp)
                 if (v == null) return ''
                 if (Array.isArray(v)) return v.join('; ')
+                if (v === 'N/A') return 'N/A'
                 if (col.type === 'number') return typeof v === 'number' ? v : (isNaN(Number(v)) ? '' : Number(v))
                 return String(v)
               }, `table / ${col.type}`, componentBase.validValues)
@@ -2314,8 +2324,9 @@ function buildReviewsWorkbook(db, projectId) {
       } else if (el.type === 'timestamp_select') {
         pushCol(form, section, el, { id: `${el.id}.time`, label: 'Time', validValues: 'M:SS' }, `${prefix}: Time`, (resp) => {
           const v = resp[el.id]
+          if (v === 'N/A') return 'N/A'
           return (v && typeof v === 'object' && v.time_seconds != null) ? fmtTime(v.time_seconds) : ''
-        }, 'timestamp_select', 'M:SS')
+        }, 'timestamp_select', el.has_na ? 'M:SS, N/A' : 'M:SS')
         pushCol(form, section, el, { id: `${el.id}.tag`, label: 'Tag', validValues: 'Tag label' }, `${prefix}: Tag`, (resp) => {
           const v = resp[el.id]
           return (v && typeof v === 'object') ? (v.tag_label || '') : ''
@@ -2326,8 +2337,9 @@ function buildReviewsWorkbook(db, projectId) {
         const component = { id: el.id, label: el.label || el.id, validValues: validValuesForElement(el) }
         pushCol(form, section, el, component, prefix, (resp) => {
           const v = resp[el.id]
+          if (v === 'N/A') return 'N/A'
           return v === true ? 'Yes' : v === false ? 'No' : ''
-        }, 'checkbox', 'Yes, No')
+        }, 'checkbox', component.validValues)
         addSchemaEntry(form, section, el, component, (resp) => resp[el.id])
 
       } else if (el.type === 'rating' || el.type === 'likert' || el.type === 'slider') {
@@ -2336,6 +2348,7 @@ function buildReviewsWorkbook(db, projectId) {
         pushCol(form, section, el, component, prefix, (resp) => {
           const v = resp[el.id]
           if (v == null) return ''
+          if (v === 'N/A') return 'N/A'
           return typeof v === 'number' ? v : (isNaN(Number(v)) ? '' : Number(v))
         }, el.type, validValues)
         addSchemaEntry(form, section, el, component, (resp) => resp[el.id])

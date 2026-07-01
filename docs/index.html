@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SDMo - Patient Encounter Coding App</title>
+    <meta name="description" content="SDMo is a desktop app for research teams coding patient encounter media with timestamps, structured forms, and team sync.">
+    <link rel="icon" href="assets/app-icon.png">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <nav class="nav" aria-label="Main navigation">
+        <a class="brand" href="./">
+          <img src="assets/app-icon.png" alt="">
+          <span>SDMo</span>
+        </a>
+        <div class="nav-links">
+          <a href="#download">Download</a>
+          <a href="#overview">Overview</a>
+          <a href="privacy.html">Privacy</a>
+          <a href="terms.html">Terms</a>
+          <a href="https://github.com/n232not/sdmo-app">GitHub</a>
+        </div>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div>
+          <div class="eyebrow">Open-source desktop app for research coding</div>
+          <h1>SDMo</h1>
+          <p class="lead">
+            Patient encounter coding software for teams reviewing videos, audio, PDFs, and other study media.
+            Coders can log timestamped observations, complete structured forms, and sync submitted reviews across machines.
+          </p>
+          <div class="actions">
+            <a id="download-primary" class="button primary" href="https://github.com/n232not/sdmo-app/releases/latest">Download latest version</a>
+            <a class="button" href="https://github.com/n232not/sdmo-app">View source</a>
+          </div>
+          <p id="version-note" class="version-note">Current published package version: 0.2.6. Downloads are hosted on GitHub Releases.</p>
+        </div>
+
+        <div class="app-visual" aria-label="SDMo interface preview">
+          <div class="window-bar">
+            <span class="dot"></span>
+            <span class="dot"></span>
+            <span class="dot"></span>
+          </div>
+          <div class="mockup">
+            <div class="mockup-brand">
+              <img src="assets/app-icon.png" alt="">
+              <span>Encounter Coding Workspace</span>
+            </div>
+            <div class="mockup-row">
+              <strong>Review</strong>
+              <span class="pill"></span>
+              <span class="pill green"></span>
+            </div>
+            <div class="mockup-row">
+              <strong>Tags</strong>
+              <span class="pill short yellow"></span>
+              <span class="pill"></span>
+            </div>
+            <div class="mockup-row">
+              <strong>Forms</strong>
+              <span class="pill"></span>
+              <span class="pill green"></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="download" class="section">
+        <div class="download-panel">
+          <div>
+            <h2>Download SDMo</h2>
+            <p>
+              Installers are published through GitHub Releases. Choose the file for your operating system:
+              macOS Apple Silicon uses the arm64 DMG, and Windows uses the Setup EXE.
+            </p>
+          </div>
+          <div class="actions">
+            <a id="download-mac" class="button primary" href="https://github.com/n232not/sdmo-app/releases/latest">Mac download</a>
+            <a id="download-windows" class="button" href="https://github.com/n232not/sdmo-app/releases/latest">Windows download</a>
+          </div>
+        </div>
+      </section>
+
+      <section id="overview" class="section">
+        <h2>Overview</h2>
+        <div class="grid">
+          <article class="card">
+            <h3>Project setup</h3>
+            <p>Create study projects with encounters, media slots, media types, workspace tabs, instructions, timestamp tags, and custom forms.</p>
+          </article>
+          <article class="card">
+            <h3>Review workflow</h3>
+            <p>Coders open media, add timestamped labels and notes, fill out structured forms, and submit reviews when complete.</p>
+          </article>
+          <article class="card">
+            <h3>Team sync</h3>
+            <p>Teams can sync project structure and review data through OneDrive, Google Drive, or a shared local/network folder.</p>
+          </article>
+          <article class="card">
+            <h3>Local media</h3>
+            <p>Media files stay on each coder's computer. Each teammate links their own local copy instead of uploading video files through SDMo.</p>
+          </article>
+          <article class="card">
+            <h3>Export</h3>
+            <p>Completed review data can be exported to Excel for analysis, with rows organized around encounters, media files, reviewers, timestamps, and form responses.</p>
+          </article>
+          <article class="card">
+            <h3>Open source</h3>
+            <p>The code is available on GitHub for review, issue reporting, and local builds. Releases are distributed from the same repository.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="notice">
+          <strong>Research data notice:</strong>
+          SDMo is a tool for research workflows, not a medical device, clinical decision system, or hosted data service.
+          Your team is responsible for appropriate consent, institutional approvals, data handling practices, and cloud-folder permissions.
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="footer-inner">
+        <span>SDMo - Patient Encounter Coding App</span>
+        <span><a href="privacy.html">Privacy Policy</a> &middot; <a href="terms.html">Terms of Service</a> &middot; <a href="https://github.com/n232not/sdmo-app/releases">Releases</a></span>
+      </div>
+    </footer>
+
+    <script>
+      const repo = 'n232not/sdmo-app'
+      const releasesUrl = `https://github.com/${repo}/releases/latest`
+
+      function findAsset(assets, patterns) {
+        return assets.find(asset => patterns.every(pattern => pattern.test(asset.name)))
+      }
+
+      fetch(`https://api.github.com/repos/${repo}/releases/latest`)
+        .then(response => response.ok ? response.json() : null)
+        .then(release => {
+          if (!release) return
+          const version = release.tag_name || release.name || 'latest'
+          const assets = release.assets || []
+          const mac = findAsset(assets, [/\.dmg$/i, /arm64/i]) || findAsset(assets, [/\.dmg$/i])
+          const windows = findAsset(assets, [/\.exe$/i])
+
+          document.getElementById('version-note').textContent = `Latest release: ${version}. Downloads are hosted on GitHub Releases.`
+          document.getElementById('download-primary').href = release.html_url || releasesUrl
+          document.getElementById('download-primary').textContent = `Download ${version}`
+
+          if (mac) document.getElementById('download-mac').href = mac.browser_download_url
+          if (windows) document.getElementById('download-windows').href = windows.browser_download_url
+        })
+        .catch(() => {})
+    </script>
+  </body>
+</html>

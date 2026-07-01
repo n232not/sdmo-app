@@ -14,6 +14,10 @@ const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 let mainWindow
 const workspaceWindows = {} // reviewId string → BrowserWindow
 
+function getWindowIconPath() {
+  return path.join(__dirname, '../build/icon.png')
+}
+
 // Wrap ipcMain.handle so every handler across all IPC modules gets a try/catch.
 // Errors are logged in the main process (for debuggability) and re-thrown so the
 // renderer's awaited promise rejects with the original message instead of a generic
@@ -96,6 +100,7 @@ function createWindow() {
     minHeight: 600,
     autoHideMenuBar: true,
     backgroundColor: '#ffffff',
+    icon: getWindowIconPath(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -197,6 +202,7 @@ ipcMain.handle('window:openWorkspace', (_, url) => {
     title: 'SDMo — Workspace',
     autoHideMenuBar: true,
     backgroundColor: '#ffffff',
+    icon: getWindowIconPath(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,

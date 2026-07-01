@@ -137,7 +137,9 @@ export default function WorkspacePage() {
         for (const el of (section.elements || [])) {
           if (!el.required) continue
           const val = responses[el.id]
-          const empty = val === undefined || val === null || val === '' || (Array.isArray(val) && val.length === 0)
+          const empty = val === undefined || val === null || val === '' ||
+            (Array.isArray(val) && val.length === 0) ||
+            (typeof val === 'object' && !Array.isArray(val) && Object.keys(val).length === 0)
           if (empty) errors.push({ tab: tab.label, question: el.label })
         }
       }
