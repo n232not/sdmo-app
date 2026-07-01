@@ -1,21 +1,13 @@
 const { app, BrowserWindow } = require('electron')
 const { autoUpdater } = require('electron-updater')
-const fetch = require('node-fetch')
 const { backupDb } = require('./db')
 const { getSettings, saveSettings } = require('./settings')
-const pkg = require('../package.json')
 
 const REQUIRED_MARKERS = [
   '[sdmo-update:required]',
   'sdmo_update_required=true',
   'required_update: true',
 ]
-
-const DEFAULT_GITHUB_RELEASES = {
-  provider: 'github',
-  owner: 'n232not',
-  repo: 'sdmo-app',
-}
 
 let status = {
   state: app.isPackaged ? 'idle' : 'unavailable',
@@ -29,10 +21,6 @@ let status = {
 
 function canInstallInApp() {
   return process.platform !== 'darwin' || process.env.SDMO_ENABLE_MAC_AUTO_UPDATE === '1'
-}
-
-function shouldUseManualReleaseCheck() {
-  return !app.isPackaged || !canInstallInApp()
 }
 
 function normalizeReleaseNotes(notes) {
@@ -55,76 +43,6 @@ function publicInfo(info) {
     releaseDate: info.releaseDate || null,
     releaseNotes: info.releaseNotes || null,
     releaseUrl: info.releaseUrl || null,
-  }
-}
-
-function parseVersion(value) {
-  const match = `${value || ''}`.match(/(\d+)\.(\d+)\.(\d+)(?:[-+].*)?/)
-  if (!match) return null
-  return match.slice(1, 4).map(n => Number(n))
-}
-
-function compareVersions(a, b) {
-  const left = parseVersion(a)
-  const right = parseVersion(b)
-  if (!left || !right) return 0
-  for (let i = 0; i < 3; i++) {
-    if (left[i] !== right[i]) return left[i] > right[i] ? 1 : -1
-  }
-  return 0
-}
-
-function getPublishConfig() {
-  const publish = Array.isArray(pkg.build?.publish) ? pkg.build.publish[0] : pkg.build?.publish
-  if (publish?.provider === 'github' && publish.owner && publish.repo) return publish
-  return DEFAULT_GITHUB_RELEASES
-}
-
-async function checkGitHubRelease() {
-  const publish = getPublishConfig()
-  if (!publish?.owner || !publish?.repo) {
-    setStatus({ state: 'unavailable', checking: false, error: 'GitHub release updates are not configured for this build.' })
-    return getUpdateStatus()
-  }
-
-  setStatus({ state: 'checking', checking: true, error: null })
-  try {
-    const url = `https://api.github.com/repos/${publish.owner}/${publish.repo}/releases/latest`
-    const response = await fetch(url, {
-      headers: {
-        Accept: 'application/vnd.github+json',
-        'User-Agent': `${app.getName()}/${app.getVersion()}`,
-      },
-    })
-    if (response.status === 404) {
-      setStatus({ state: 'not-available', checking: false, updateInfo: null, required: false, downloaded: false, error: null })
-      return getUpdateStatus()
-    }
-    if (!response.ok) {
-      throw new Error(`GitHub release check failed (${response.status})`)
-    }
-
-    const release = await response.json()
-    const version = `${release.tag_name || release.name || ''}`.replace(/^v/i, '')
-    if (!version || compareVersions(version, app.getVersion()) <= 0) {
-      setStatus({ state: 'not-available', checking: false, updateInfo: null, required: false, downloaded: false, error: null })
-      return getUpdateStatus()
-    }
-
-    const info = {
-      version,
-      releaseName: release.name || release.tag_name || version,
-      releaseDate: release.published_at || release.created_at || null,
-      releaseNotes: release.body || '',
-      releaseUrl: release.html_url || `https://github.com/${publish.owner}/${publish.repo}/releases/latest`,
-    }
-    const required = isRequiredRelease(info)
-    if (required) rememberRequiredUpdate(info)
-    setStatus({ state: 'available', checking: false, updateInfo: info, required, downloaded: false, error: null })
-    return getUpdateStatus()
-  } catch (error) {
-    setStatus({ state: 'error', checking: false, error: error?.message || String(error) })
-    return getUpdateStatus()
   }
 }
 
@@ -163,7 +81,7 @@ function getUpdateStatus() {
     requiredVersion: status.updateInfo?.version || remembered?.version || null,
     updateInfo: publicInfo(status.updateInfo),
     rememberedRequiredUpdate: rememberedRequired ? remembered : null,
-    manualInstallOnly: shouldUseManualReleaseCheck(),
+    manualInstallOnly: app.isPackaged && !canInstallInApp(),
   }
 }
 
@@ -172,11 +90,6 @@ function initUpdater() {
 
   if (!app.isPackaged) {
     setStatus({ state: 'unavailable', error: 'Updates are only available in packaged builds.' })
-    return
-  }
-
-  if (!canInstallInApp()) {
-    setTimeout(() => checkGitHubRelease(), 5000)
     return
   }
 
@@ -253,8 +166,8 @@ function waitForUpdateCheckResult() {
 }
 
 async function checkForUpdates() {
+  if (!app.isPackaged) return getUpdateStatus()
   if (status.checking) return getUpdateStatus()
-  if (shouldUseManualReleaseCheck()) return checkGitHubRelease()
   const result = waitForUpdateCheckResult()
   setStatus({ state: 'checking', checking: true, error: null })
   try {
