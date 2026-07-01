@@ -73,6 +73,7 @@ export default function AppUpdateGate() {
 
   const isDownloading = status.state === 'downloading'
   const isDownloaded = status.state === 'downloaded'
+  const manualInstallOnly = status.manualInstallOnly
   const progress = status.progress?.percent ? Math.round(status.progress.percent) : null
 
   return (
@@ -92,7 +93,7 @@ export default function AppUpdateGate() {
               <RefreshCw size={14} /> Retry
             </button>
           )}
-          {!isDownloaded && status.state !== 'error' && (
+          {!manualInstallOnly && !isDownloaded && status.state !== 'error' && (
             <button className={status.required ? 'btn btn-danger' : 'btn btn-primary'} onClick={download} disabled={busy || isDownloading}>
               <Download size={14} /> {isDownloading ? `Downloading${progress != null ? ` ${progress}%` : ''}` : 'Download Update'}
             </button>
@@ -115,6 +116,11 @@ export default function AppUpdateGate() {
         <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
           {releaseText(status.updateInfo || status.rememberedRequiredUpdate)} is available. Updates install the app only; your local projects, reviews, settings, sync credentials, and media links stay in SDMo's data folder.
         </p>
+        {manualInstallOnly && (
+          <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
+            This macOS build cannot install updates in-app. Install the latest DMG manually.
+          </p>
+        )}
         {isDownloading && (
           <div style={{ height: 8, background: 'var(--bg-active)', borderRadius: 99, overflow: 'hidden' }}>
             <div style={{ height: '100%', width: `${progress || 8}%`, background: 'var(--accent)' }} />

@@ -19,6 +19,10 @@ let status = {
   checking: false,
 }
 
+function canInstallInApp() {
+  return process.platform !== 'darwin' || process.env.SDMO_ENABLE_MAC_AUTO_UPDATE === '1'
+}
+
 function normalizeReleaseNotes(notes) {
   if (Array.isArray(notes)) {
     return notes.map(n => `${n?.note || n || ''}`).join('\n')
@@ -76,6 +80,7 @@ function getUpdateStatus() {
     requiredVersion: status.updateInfo?.version || remembered?.version || null,
     updateInfo: publicInfo(status.updateInfo),
     rememberedRequiredUpdate: rememberedRequired ? remembered : null,
+    manualInstallOnly: app.isPackaged && !canInstallInApp(),
   }
 }
 
@@ -84,14 +89,6 @@ function initUpdater() {
 
   if (!app.isPackaged) {
     setStatus({ state: 'unavailable', error: 'Updates are only available in packaged builds.' })
-    return
-  }
-
-  if (process.platform === 'darwin' && process.env.SDMO_ENABLE_MAC_AUTO_UPDATE !== '1') {
-    setStatus({
-      state: 'unavailable',
-      error: 'Mac in-app updates require a Developer ID signed build. Install the latest DMG manually.',
-    })
     return
   }
 
@@ -136,16 +133,61 @@ function initUpdater() {
   setTimeout(() => checkForUpdates(), 5000)
 }
 
+function waitForUpdateCheckResult() {
+  return new Promise((resolve) => {
+    let done = false
+    let timeoutId = null
+
+    function finish(patch) {
+      if (done) return
+      done = true
+      clearTimeout(timeoutId)
+      autoUpdater.removeListener('update-available', onAvailable)
+      autoUpdater.removeListener('update-not-available', onNotAvailable)
+      autoUpdater.removeListener('error', onError)
+      if (patch) setStatus(patch)
+      resolve(getUpdateStatus())
+    }
+
+    function onAvailable() { finish() }
+    function onNotAvailable() { finish() }
+    function onError(error) {
+      finish({ state: 'error', checking: false, error: error?.message || String(error) })
+    }
+
+    autoUpdater.once('update-available', onAvailable)
+    autoUpdater.once('update-not-available', onNotAvailable)
+    autoUpdater.once('error', onError)
+    timeoutId = setTimeout(() => {
+      finish({ state: 'error', checking: false, error: 'Update check timed out. Please try again.' })
+    }, 30000)
+  })
+}
+
 async function checkForUpdates() {
   if (!app.isPackaged) return getUpdateStatus()
-  await autoUpdater.checkForUpdates()
-  return getUpdateStatus()
+  if (status.checking) return getUpdateStatus()
+  const result = waitForUpdateCheckResult()
+  setStatus({ state: 'checking', checking: true, error: null })
+  try {
+    await autoUpdater.checkForUpdates()
+    return await result
+  } catch (error) {
+    setStatus({ state: 'error', checking: false, error: error?.message || String(error) })
+    return getUpdateStatus()
+  }
 }
 
 async function downloadUpdate() {
   if (!app.isPackaged) return getUpdateStatus()
+  if (!canInstallInApp()) {
+    setStatus({
+      error: 'Mac in-app updates require a Developer ID signed build. Install the latest DMG manually.',
+    })
+    return getUpdateStatus()
+  }
   if (!status.updateInfo) {
-    await autoUpdater.checkForUpdates()
+    await checkForUpdates()
     if (!status.updateInfo || status.state !== 'available') return getUpdateStatus()
   }
   setStatus({ state: 'downloading', error: null })
@@ -154,6 +196,7 @@ async function downloadUpdate() {
 }
 
 function quitAndInstall() {
+  if (!canInstallInApp()) return
   backupDb('pre-app-update')
   autoUpdater.quitAndInstall(false, true)
 }

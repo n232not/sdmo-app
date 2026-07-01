@@ -1265,7 +1265,9 @@ function VersionManagementSection({ projectId, forms, mediaTypes, locked, onChan
 function AboutSection({ appInfo, updateStatus, busy, diagnosticsMessage, onCheckForUpdate, onDownloadUpdate, onInstallUpdate, onExportDiagnostics }) {
   const updateVersion = updateStatus?.updateInfo?.version || updateStatus?.requiredVersion
   const updateLabel = updateStatus?.state === 'available'
-    ? `Update available: ${updateVersion || 'new version'}`
+    ? updateStatus?.manualInstallOnly
+      ? `Update available: ${updateVersion || 'new version'}. Install the latest DMG manually.`
+      : `Update available: ${updateVersion || 'new version'}`
     : updateStatus?.state === 'downloaded'
       ? `Update ready: ${updateVersion || 'new version'}`
       : updateStatus?.state === 'downloading'
@@ -1325,7 +1327,7 @@ function AboutSection({ appInfo, updateStatus, busy, diagnosticsMessage, onCheck
             <button className="btn btn-secondary" onClick={onCheckForUpdate} disabled={busy || updateStatus?.state === 'checking'}>
               <RefreshCw size={14} /> Check for Updates
             </button>
-            {updateStatus?.state === 'available' && (
+            {updateStatus?.state === 'available' && !updateStatus?.manualInstallOnly && (
               <button className={updateStatus.required ? 'btn btn-danger' : 'btn btn-primary'} onClick={onDownloadUpdate} disabled={busy}>
                 <Download size={14} /> Download
               </button>
