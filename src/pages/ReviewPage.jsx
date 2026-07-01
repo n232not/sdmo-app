@@ -278,20 +278,21 @@ export default function ReviewPage() {
     ])
     if (!enc) { setLoading(false); return }
     setEncProjectId(enc.project_id)
-    setVideoUrl(playback?.url || null)
+    const hasLinkedPlayback = playback?.status === 'linked' && !!playback.url
+    setVideoUrl(hasLinkedPlayback ? playback.url : null)
     setVideoError('')
 
-    if (!playback || playback.status !== 'linked' || !playback.url) {
-      setLinkModal(playback?.status === 'missing' ? 'missing' : 'not_linked')
-      setLoading(false)
-      return
+    if (hasLinkedPlayback) {
+      setMediaFile(current => current
+        ? { ...current, file_type: playback.file_type || current.file_type, resolved_path: playback.resolved_path, link_status: playback.status }
+        : current
+      )
+    } else {
+      setMediaFile(current => current
+        ? { ...current, file_type: playback?.file_type || current.file_type, resolved_path: playback?.resolved_path || null, link_status: playback?.status || 'not_linked' }
+        : current
+      )
     }
-
-    setMediaFile(current => current
-      ? { ...current, file_type: playback.file_type || current.file_type, resolved_path: playback.resolved_path }
-      : current
-    )
-    setLinkModal(null)
 
     // Parallel: project + media types
     const [proj, allTypes] = await Promise.all([
@@ -306,6 +307,7 @@ export default function ReviewPage() {
       setWorkspaceTabs(frozen.workspaceTabs)
       setFormSchemas(frozen.formSchemas)
       setInstructions(frozen.instructions)
+      setLinkModal(hasLinkedPlayback || playback?.status === 'not_applicable' ? null : playback?.status === 'missing' ? 'missing' : 'not_linked')
       setLoading(false)
       return
     }
@@ -332,6 +334,7 @@ export default function ReviewPage() {
     })
     setInstructions(newInstructions)
 
+    setLinkModal(hasLinkedPlayback || playback?.status === 'not_applicable' ? null : playback?.status === 'missing' ? 'missing' : 'not_linked')
     setLoading(false)
   }
 
@@ -350,7 +353,9 @@ export default function ReviewPage() {
   async function handleMarkNA() {
     if (!mediaFile) return
     await api.markMediaNotApplicable(mediaFile.id)
-    navigate(-1)
+    setMediaFile(current => current ? { ...current, link_status: 'not_applicable', resolved_path: null } : current)
+    setVideoUrl(null)
+    setLinkModal(null)
   }
 
   // --- Drag-to-resize split ---

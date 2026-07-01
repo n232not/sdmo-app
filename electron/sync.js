@@ -1298,7 +1298,7 @@ function canonicalizeProjectState(state) {
       restored_at: rev.restored_at || null,
       media_type_sync_id: rev.media_type_sync_id || null,
       media_type_version: rev.media_type_version || null,
-      workspace_snapshot: rev.workspace_snapshot || null,
+      workspace_snapshot: canonicalWorkspaceSnapshot(rev.workspace_snapshot),
       timestamps: [...(rev.timestamps || [])].sort((a, b) => {
         if (a.time_seconds !== b.time_seconds) return a.time_seconds - b.time_seconds
         return (a.created_at || '') > (b.created_at || '') ? 1 : -1
@@ -1307,7 +1307,7 @@ function canonicalizeProjectState(state) {
         form_name: fr.form_name,
         form_sync_id: fr.form_sync_id || null,
         form_version: fr.form_version || null,
-        form_snapshot: fr.form_snapshot || null,
+        form_snapshot: canonicalFormSnapshot(fr.form_snapshot),
         responses: fr.responses,
       })),
     })),
@@ -1319,6 +1319,72 @@ function canonicalizeProjectState(state) {
 
 function projectStateFingerprint(db, projectId) {
   return hashOf(canonicalizeProjectState(buildProjectStateIndexExport(db, projectId)))
+}
+
+function sortStable(arr, keyFn) {
+  return [...(arr || [])].sort((a, b) => {
+    const av = keyFn(a)
+    const bv = keyFn(b)
+    return av > bv ? 1 : av < bv ? -1 : 0
+  })
+}
+
+function canonicalFormSnapshot(form) {
+  if (!form) return null
+  return {
+    sync_id: form.sync_id || null,
+    version: form.version || null,
+    name: form.name || '',
+    schema: form.schema || { sections: [] },
+  }
+}
+
+function canonicalInstructionSnapshot(instr) {
+  if (!instr) return null
+  return {
+    sync_id: instr.sync_id || null,
+    name: instr.name || '',
+    content_type: instr.content_type || 'markdown',
+    content: instr.content || '',
+  }
+}
+
+function canonicalWorkspaceSnapshot(snapshot) {
+  if (!snapshot) return null
+  const forms = sortStable(Object.values(snapshot.forms || {}).map(canonicalFormSnapshot), f => `${f.sync_id || ''}:${f.name}`)
+  const instructions = sortStable(Object.values(snapshot.instructions || {}).map(canonicalInstructionSnapshot), i => `${i.sync_id || ''}:${i.name}`)
+  return {
+    snapshot_version: snapshot.snapshot_version || 1,
+    captured_at: snapshot.captured_at || null,
+    media_file: snapshot.media_file ? {
+      sync_id: snapshot.media_file.sync_id || null,
+      name: snapshot.media_file.name || '',
+      file_type: snapshot.media_file.file_type || 'other',
+    } : null,
+    media_type: snapshot.media_type ? {
+      sync_id: snapshot.media_type.sync_id || null,
+      version: snapshot.media_type.version || null,
+      name: snapshot.media_type.name || '',
+      reviews_required: snapshot.media_type.reviews_required ?? null,
+      allow_custom_tags: snapshot.media_type.allow_custom_tags ? 1 : 0,
+      color: snapshot.media_type.color || null,
+    } : null,
+    tags: sortStable((snapshot.tags || []).map(t => ({
+      label: t.label || '',
+      color: t.color || null,
+      description: t.description || '',
+    })), t => t.label),
+    workspace_tabs: sortStable((snapshot.workspace_tabs || []).map(tab => ({
+      tab_type: tab.tab_type || '',
+      ref_sync_id: tab.ref_sync_id || null,
+      ref_name: tab.ref_name || null,
+      ref_version: tab.ref_version || null,
+      label: tab.label || '',
+      sort_order: tab.sort_order || 0,
+    })), tab => `${String(tab.sort_order).padStart(6, '0')}:${tab.tab_type}:${tab.ref_sync_id || tab.ref_name || ''}`),
+    forms,
+    instructions,
+  }
 }
 
 function buildReviewHash(review) {
@@ -1335,15 +1401,24 @@ function buildReviewHash(review) {
     restored_at: review.restored_at || null,
     media_type_sync_id: review.media_type_sync_id || null,
     media_type_version: review.media_type_version || null,
-    workspace_snapshot: review.workspace_snapshot || null,
-    timestamps: review.timestamps || [],
+    workspace_snapshot: canonicalWorkspaceSnapshot(review.workspace_snapshot),
+    timestamps: [...(review.timestamps || [])].sort((a, b) => {
+      if (a.time_seconds !== b.time_seconds) return a.time_seconds - b.time_seconds
+      return (a.created_at || '') > (b.created_at || '') ? 1 : -1
+    }).map(ts => ({
+      time_seconds: ts.time_seconds,
+      tag_label: ts.tag_label || null,
+      tag_color: ts.tag_color || null,
+      notes: ts.notes || '',
+      created_at: ts.created_at || null,
+    })),
     form_responses: (review.form_responses || []).map(fr => ({
       form_name: fr.form_name,
       form_sync_id: fr.form_sync_id || null,
       form_version: fr.form_version || null,
-      form_snapshot: fr.form_snapshot || null,
+      form_snapshot: canonicalFormSnapshot(fr.form_snapshot),
       responses: fr.responses,
-    })),
+    })).sort((a, b) => (a.form_sync_id || a.form_name || '') > (b.form_sync_id || b.form_name || '') ? 1 : -1),
   })
 }
 

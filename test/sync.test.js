@@ -958,6 +958,51 @@ test('doLocalSync: two machines exchange full project state through a shared fol
   a.close(); b.close()
 })
 
+test('project-state sync: localized review snapshot ids do not produce false conflicts', () => {
+  const folder = tmpDir('sdmo-sync-review-ids-')
+
+  const a = makeDb()
+  const pa = createProject(a, 'Study')
+  const formA = addForm(a, pa, 'Intake', {
+    sections: [{ id: 's1', title: 'S', elements: [{ id: 'q1', type: 'text', label: 'Q' }] }],
+  }, { sync_id: 'form-1' })
+  const mtA = addMediaType(a, pa, 'Video', { sync_id: 'mt-1', tags: [{ label: 'Greeting', color: '#123456' }] })
+  addWorkspaceTab(a, mtA, { tab_type: 'form', ref_id: formA, label: 'Intake', sort_order: 0 })
+  const encA = addEncounter(a, pa, 'P1', 'enc-1')
+  const mediaA = addMedia(a, encA.id, 'v.mp4', { media_type_id: mtA, sync_id: 'media-1' })
+  const reviewA = addReview(a, mediaA.id, 'Alice', {
+    review_sync_id: 'review-1',
+    reviewer_uuid: 'uuid-A',
+    created_at: '2026-01-01T00:00:00.000Z',
+  })
+  const snapA = snapshots.buildWorkspaceSnapshot(a, mediaA.id)
+  a.prepare('UPDATE reviews SET workspace_snapshot=?, media_type_sync_id=?, media_type_version=? WHERE id=?')
+    .run(JSON.stringify(snapA), snapA.media_type.sync_id, snapA.media_type.version, reviewA.id)
+  a.prepare('INSERT INTO form_responses (review_id, form_id, responses, form_sync_id, form_version, form_snapshot, updated_at) VALUES (?,?,?,?,?,?,?)')
+    .run(reviewA.id, formA, JSON.stringify({ q1: 'Yes' }), 'form-1', 1, JSON.stringify(snapshots.currentFormSnapshot(a, formA)), '2026-01-01 00:00:00')
+
+  assert.deepStrictEqual(sync.syncProjectStateLocal(a, pa, folder).conflicts, [])
+
+  const b = makeDb()
+  const dummyProject = createProject(b, 'Dummy')
+  addForm(b, dummyProject, 'Dummy Form')
+  addMediaType(b, dummyProject, 'Dummy Type')
+  const pb = createProject(b, 'Placeholder')
+
+  assert.deepStrictEqual(sync.syncProjectStateLocal(b, pb, folder).conflicts, [])
+  const localSnapA = JSON.parse(a.prepare('SELECT workspace_snapshot FROM reviews WHERE review_sync_id=?').get('review-1').workspace_snapshot)
+  const localSnapB = JSON.parse(b.prepare('SELECT workspace_snapshot FROM reviews WHERE review_sync_id=?').get('review-1').workspace_snapshot)
+  assert.notDeepStrictEqual(
+    { formKeys: Object.keys(localSnapA.forms), refId: localSnapA.workspace_tabs[0].ref_id },
+    { formKeys: Object.keys(localSnapB.forms), refId: localSnapB.workspace_tabs[0].ref_id },
+    'test setup should create different local form ids'
+  )
+
+  assert.deepStrictEqual(sync.syncProjectStateLocal(a, pa, folder).conflicts, [])
+
+  a.close(); b.close()
+})
+
 test('doLocalSync: large review payloads switch to split files at the 5 MiB cutoff', async () => {
   const folder = tmpDir('sdmo-sync-large-')
 
