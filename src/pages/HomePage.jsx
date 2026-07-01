@@ -222,7 +222,7 @@ export default function HomePage() {
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
           <img src={appIcon} alt="" style={{ width: 44, height: 44, objectFit: 'contain' }} />
-          <span style={{ fontWeight: 700, fontSize: 15, letterSpacing: '-0.2px' }}>SDMo</span>
+          <span style={{ fontWeight: 700, fontSize: 18, letterSpacing: '-0.2px' }}>SDMo</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, WebkitAppRegion: 'no-drag' }}>
           <button
